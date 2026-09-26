@@ -2,7 +2,7 @@ import os
 import re
 import logging
 import asyncio
-import threading import Thread
+from threading import Thread
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 from supabase import create_client, Client
