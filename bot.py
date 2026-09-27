@@ -51,14 +51,16 @@ URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,})'
 # ==========================================
 # 3. HELPER FUNCTIONS (SUPABASE OPERATIONS)
 # ==========================================
-def save_chat_log(user_id: int, username: str, chat_id: int, message_text: str):
-    """រក្សាទុកសារចូលក្នុង Table chat_logs"""
+def save_chat_log(user_id: int, username: str, full_name: str, chat_id: int, group_title: str, message_text: str):
+    """រក្សាទុកសារចូលក្នុង Table chat_logs ឱ្យត្រូវតាម Schema របស់ Supabase"""
     try:
         data = {
             "user_id": user_id,
             "username": username or "Unknown",
+            "full_name": full_name or "Unknown",
             "chat_id": chat_id,
-            "message": message_text
+            "group_title": group_title or "Private",
+            "message_text": message_text
         }
         res = supabase.table("chat_logs").insert(data).execute()
         print(f"✅ Saved log to Supabase: {res.data}")
@@ -119,7 +121,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_log(
         user_id=user.id,
         username=user.username,
+        full_name=user.full_name,
         chat_id=chat.id,
+        group_title=chat.title,
         message_text=text
     )
 
