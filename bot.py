@@ -1,9 +1,7 @@
 import os
 import re
-import asyncio
-from threading import Thread
+import threading
 from flask import Flask
-from supabase import create_client, Client
 from telegram import Update, ChatPermissions
 from telegram.ext import (
     ApplicationBuilder,
@@ -12,47 +10,41 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from supabase import create_client, Client
 
 # ==========================================
-# 1. FLASK HEALTH CHECK SERVER (សម្រាប់ RENDER)
+# 1. SETUP ENVIRONMENT & SUPABASE
 # ==========================================
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running 24/7!"
-
-def run_flask():
-    # ចាប់យក PORT ពី Render (Default: 10000 ឬ 8080)
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# រ៉ាន់ Flask ក្នុង Background Thread
-flask_thread = Thread(target=run_flask)
-flask_thread.daemon = True
-flask_thread.start()
-
-# ==========================================
-# 2. CONFIGURATION & SUPABASE SETUP
-# ==========================================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
-    print("❌ ERROR: Missing Environment Variables!")
+if not TELEGRAM_BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
+    print("❌ Error: Missing required Environment Variables!")
 
-# បង្កើត Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Regex សម្រាប់ចាប់ Link
-URL_REGEX = r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,})'
+# Regex សម្រាប់ស្វែងរក Link/URL
+URL_REGEX = r"(https?://[^\s]+|www\.[^\s]+|[a-zA-Lead0-9-]+\.[a-z]{2,}[^\s]*)"
 
 # ==========================================
-# 3. HELPER FUNCTIONS (SUPABASE OPERATIONS)
+# 2. FLASK HEALTH CHECK SERVER
+# ==========================================
+app = Flask(__name__)
+
+@app.route("/")
+def health_check():
+    return "Bot status OK", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# ==========================================
+# 3. SUPABASE HELPER FUNCTIONS
 # ==========================================
 def save_chat_log(user_id: int, username: str, full_name: str, chat_id: int, group_title: str, message_text: str):
-    """រក្សាទុកសារចូលក្នុង Table chat_logs ឱ្យត្រូវតាម Schema របស់ Supabase"""
+    """រក្សាទុកសារចូលក្នុង Table chat_logs ឱ្យត្រូវតាម Schema របស់ Supabase"""[cite: 1]
     try:
         data = {
             "user_id": user_id,
@@ -67,47 +59,42 @@ def save_chat_log(user_id: int, username: str, full_name: str, chat_id: int, gro
     except Exception as e:
         print(f"❌ Error saving chat log: {e}")
 
-def get_user_warn_count(user_id: int, chat_id: int) -> int:
-    """ទាញយកចំនួន Warn របស់ User"""
+def check_and_warn_user(user_id: int, chat_id: int):
+    """ពិនិត្យ និងកើនចំនួន Warn របស់ User ក្នុង Supabase"""[cite: 1]
     try:
+        # ស្វែងរកមើលថា User នេះធ្លាប់មាន Record ក្នុង Table user_warns ដែរឬទេ
         res = supabase.table("user_warns").select("warn_count").eq("user_id", user_id).eq("chat_id", chat_id).execute()
-        if res.data:
-            return res.data[0]["warn_count"]
-        return 0
-    except Exception as e:
-        print(f"❌ Error getting warns: {e}")
-        return 0
-
-def add_user_warn(user_id: int, username: str, chat_id: int) -> int:
-    """បន្ថែមចំនួន Warn និងរក្សាទុកក្នុង user_warns"""
-    try:
-        current_warns = get_user_warn_count(user_id, chat_id)
-        new_warns = current_warns + 1
         
-        data = {
-            "user_id": user_id,
-            "username": username or "Unknown",
-            "chat_id": chat_id,
-            "warn_count": new_warns
-        }
-        
-        # Upsert (Insert ឬ Update ប្រសិនបើមាន Record ស្រាប់)
-        supabase.table("user_warns").upsert(data, on_conflict="user_id,chat_id").execute()
-        print(f"⚠️ Warn added for {user_id}. Total warns: {new_warns}")
-        return new_warns
+        if res.data and len(res.data) > 0:
+            # បើមានស្រាប់ បូកបន្ថែម 1
+            current_warn = res.data[0]["warn_count"]
+            new_warn = current_warn + 1
+            
+            supabase.table("user_warns").update({
+                "warn_count": new_warn,
+                "updated_at": "now()"
+            }).eq("user_id", user_id).eq("chat_id", chat_id).execute()
+        else:
+            # បើមិនទាន់មាន បង្កើតថ្មីត្រឹម 1[cite: 1]
+            new_warn = 1
+            supabase.table("user_warns").insert({
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "warn_count": new_warn
+            }).execute()
+            
+        return new_warn
     except Exception as e:
-        print(f"❌ Error updating warn: {e}")
+        print(f"❌ Error updating warn count: {e}")
         return 1
 
 # ==========================================
 # 4. TELEGRAM BOT HANDLERS
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command /start"""
-    await update.message.reply_text("សួស្តី! Bot គ្រប់គ្រង Group និង Log ទិន្នន័យកំពុងដំណើរការ។")
+    await update.message.reply_text("👋 ជម្រាបសួរ! Bot កំពុងដំណើរការ និងកត់ត្រាសារក្នុង Group ដោយស្វ័យប្រវត្តិ។")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler ចាប់យកគ្រប់សារទាំងអស់ក្នុង Group"""
     if not update.message or not update.message.text:
         return
 
@@ -115,9 +102,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.message.chat
     text = update.message.text
 
-    print(f"📩 Received message from {user.first_name} ({user.id}) in {chat.title}: {text}")
-
-    # 1. រក្សាទុកសារចូល Supabase chat_logs
+    # 1. រក្សាទុកសារគ្រប់ប្រភេទចូល Supabase chat_logs[cite: 1]
     save_chat_log(
         user_id=user.id,
         username=user.username,
@@ -127,64 +112,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_text=text
     )
 
-    # 2. ពិនិត្យមើលថាមាន Link ក្នុងសារដែរឬទេ (Moderation)
-    if re.search(URL_REGEX, text):
-        print(f"🚨 Link detected from user {user.id}")
-        
-        try:
-            # លុបសារដែលមាន Link
-            await update.message.delete()
-            
-            # បន្ថែម Warn Count
-            warn_count = add_user_warn(user.id, user.username, chat.id)
-            
-            if warn_count >= 3:
-                # ប្រសិនបើ Warn គ្រប់ ៣ ដង ធ្វើការ Mute User រយៈពេល ២៤ ម៉ោង
-                await context.bot.restrict_chat_member(
-                    chat_id=chat.id,
-                    user_id=user.id,
-                    permissions=ChatPermissions(can_send_messages=False),
-                    until_date=int(asyncio.get_event_loop().time() + 86400)
-                )
-                await context.bot.send_message(
-                    chat_id=chat.id,
-                    text=f"🚫 {user.mention_html()} ត្រូវបាន Mute រយៈពេល ២៤ម៉ោង ដោយសារផ្ញើ Link លើសពី ៣ដង!",
-                    parse_mode="HTML"
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=chat.id,
-                    text=f"⚠️ {user.mention_html()} មិនអនុញ្ញាតឱ្យផ្ញើ Link ក្នុង Group នេះទេ! (ការព្រមានលើកទី {warn_count}/3)",
-                    parse_mode="HTML"
-                )
-        except Exception as e:
-            print(f"❌ Failed to enforce moderation rules: {e}")
+    # 2. ពិនិត្យមើល Moderation ក្នុង Group (បើផ្ញើ Link)[cite: 1]
+    if chat.type in ["group", "supergroup"]:
+        # ពិនិត្យមើលថាតើជា Admin ដែរឬទេ (Admin អាចផ្ញើ Link បាន)
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        if member.status in ["administrator", "creator"]:
+            return
+
+        # បើជាសមាជិកធម្មតា ហើយមានផ្ញើ Link[cite: 1]
+        if re.search(URL_REGEX, text):
+            try:
+                # លុបសារដែលមាន Link[cite: 1]
+                await update.message.delete()
+                
+                # បូកចំនួន Warn ក្នុង Supabase[cite: 1]
+                warn_count = check_and_warn_user(user.id, chat.id)
+                
+                if warn_count >= 3:
+                    # Mute អ្នកប្រើប្រាស់ ២៤ ម៉ោង បើគ្រប់ ៣ ដង[cite: 1]
+                    await context.bot.restrict_chat_member(
+                        chat_id=chat.id,
+                        user_id=user.id,
+                        permissions=ChatPermissions(can_send_messages=False),
+                        until_date=int(update.message.date.timestamp()) + 86400
+                    )
+                    await context.bot.send_message(
+                        chat_id=chat.id,
+                        text=f"🚫 {user.full_name} ត្រូវបាន Mute រយៈពេល ២៤ ម៉ោង ដោយសារតែការផ្ញើ Link លើសពី ៣ ដង!"
+                    )
+                else:
+                    # ផ្ញើសារព្រមាន[cite: 1]
+                    await context.bot.send_message(
+                        chat_id=chat.id,
+                        text=f"⚠️ {user.full_name} មិនអនុញ្ញាតឱ្យផ្ញើ Link ក្នុង Group នេះទេ!\n(ការព្រមានលើកទី {warn_count}/3)"
+                    )
+            except Exception as e:
+                print(f"❌ Error in moderation: {e}")
 
 # ==========================================
-# 5. MAIN ASYNC RUNNER
+# 5. MAIN EXECUTION
 # ==========================================
-async def main():
-    print("🚀 Starting Telegram Bot...")
+if __name__ == "__main__":
+    # បើក Flask Server លើ Thread ផ្សេង[cite: 1]
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # រ៉ាន់ Telegram Bot[cite: 1]
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Handlers
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # ចាប់ផ្តើម Bot Polling
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-
-    print("✅ Bot is active and listening for messages...")
-
-    # រក្សា Loop ឱ្យរ៉ាន់រហូត ២៤/៧
-    while True:
-        await asyncio.sleep(3600)
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot stopped manually.")
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    print("🚀 Telegram Bot is running...")
+    application.run_polling(drop_pending_updates=True)
