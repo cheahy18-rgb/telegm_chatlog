@@ -25,7 +25,7 @@ if not TELEGRAM_BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Regex សម្រាប់ស្វែងរក Link/URL
-URL_REGEX = r"(https?://[^\s]+|www\.[^\s]+|[a-zA-Lead0-9-]+\.[a-z]{2,}[^\s]*)"
+URL_REGEX = r"(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-z]{2,}[^\s]*)"
 
 # ==========================================
 # 2. FLASK HEALTH CHECK SERVER
@@ -44,7 +44,7 @@ def run_flask():
 # 3. SUPABASE HELPER FUNCTIONS
 # ==========================================
 def save_chat_log(user_id: int, username: str, full_name: str, chat_id: int, group_title: str, message_text: str):
-    """រក្សាទុកសារចូលក្នុង Table chat_logs ឱ្យត្រូវតាម Schema របស់ Supabase"""[cite: 1]
+    """រក្សាទុកសារចូលក្នុង Table chat_logs ឱ្យត្រូវតាម Schema របស់ Supabase"""
     try:
         data = {
             "user_id": user_id,
@@ -60,7 +60,7 @@ def save_chat_log(user_id: int, username: str, full_name: str, chat_id: int, gro
         print(f"❌ Error saving chat log: {e}")
 
 def check_and_warn_user(user_id: int, chat_id: int):
-    """ពិនិត្យ និងកើនចំនួន Warn របស់ User ក្នុង Supabase"""[cite: 1]
+    """ពិនិត្យ និងកើនចំនួន Warn របស់ User ក្នុង Supabase"""
     try:
         # ស្វែងរកមើលថា User នេះធ្លាប់មាន Record ក្នុង Table user_warns ដែរឬទេ
         res = supabase.table("user_warns").select("warn_count").eq("user_id", user_id).eq("chat_id", chat_id).execute()
@@ -75,7 +75,7 @@ def check_and_warn_user(user_id: int, chat_id: int):
                 "updated_at": "now()"
             }).eq("user_id", user_id).eq("chat_id", chat_id).execute()
         else:
-            # បើមិនទាន់មាន បង្កើតថ្មីត្រឹម 1[cite: 1]
+            # បើមិនទាន់មាន បង្កើតថ្មីត្រឹម 1
             new_warn = 1
             supabase.table("user_warns").insert({
                 "user_id": user_id,
@@ -102,7 +102,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.message.chat
     text = update.message.text
 
-    # 1. រក្សាទុកសារគ្រប់ប្រភេទចូល Supabase chat_logs[cite: 1]
+    # 1. រក្សាទុកសារគ្រប់ប្រភេទចូល Supabase chat_logs
     save_chat_log(
         user_id=user.id,
         username=user.username,
@@ -112,24 +112,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_text=text
     )
 
-    # 2. ពិនិត្យមើល Moderation ក្នុង Group (បើផ្ញើ Link)[cite: 1]
+    # 2. ពិនិត្យមើល Moderation ក្នុង Group
     if chat.type in ["group", "supergroup"]:
         # ពិនិត្យមើលថាតើជា Admin ដែរឬទេ (Admin អាចផ្ញើ Link បាន)
         member = await context.bot.get_chat_member(chat.id, user.id)
         if member.status in ["administrator", "creator"]:
             return
 
-        # បើជាសមាជិកធម្មតា ហើយមានផ្ញើ Link[cite: 1]
-        if re.search(URL_REGEX, text):
+        # ពិនិត្យមើលថាតើមាន Link ក្នុង Message ឬទេ
+        has_url = False
+        
+        # វិធីទី១៖ ឆែកតាម Telegram Entities (ច្បាស់លាស់បំផុត)
+        if update.message.entities:
+            for entity in update.message.entities:
+                if entity.type in ["url", "text_link"]:
+                    has_url = True
+                    break
+                    
+        # វិធីទី២៖ ឆែកតាម Regex
+        if not has_url and re.search(URL_REGEX, text):
+            has_url = True
+
+        # បើជាសមាជិកធម្មតា ហើយមានផ្ញើ Link
+        if has_url:
             try:
-                # លុបសារដែលមាន Link[cite: 1]
+                # លុបសារដែលមាន Link
                 await update.message.delete()
                 
-                # បូកចំនួន Warn ក្នុង Supabase[cite: 1]
+                # បូកចំនួន Warn ក្នុង Supabase
                 warn_count = check_and_warn_user(user.id, chat.id)
                 
                 if warn_count >= 3:
-                    # Mute អ្នកប្រើប្រាស់ ២៤ ម៉ោង បើគ្រប់ ៣ ដង[cite: 1]
+                    # Mute អ្នកប្រើប្រាស់ ២៤ ម៉ោង បើគ្រប់ ៣ ដង
                     await context.bot.restrict_chat_member(
                         chat_id=chat.id,
                         user_id=user.id,
@@ -141,7 +155,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text=f"🚫 {user.full_name} ត្រូវបាន Mute រយៈពេល ២៤ ម៉ោង ដោយសារតែការផ្ញើ Link លើសពី ៣ ដង!"
                     )
                 else:
-                    # ផ្ញើសារព្រមាន[cite: 1]
+                    # ផ្ញើសារព្រមាន
                     await context.bot.send_message(
                         chat_id=chat.id,
                         text=f"⚠️ {user.full_name} មិនអនុញ្ញាតឱ្យផ្ញើ Link ក្នុង Group នេះទេ!\n(ការព្រមានលើកទី {warn_count}/3)"
@@ -153,12 +167,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 5. MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
-    # បើក Flask Server លើ Thread ផ្សេង[cite: 1]
+    # បើក Flask Server លើ Thread ផ្សេង
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # រ៉ាន់ Telegram Bot[cite: 1]
+    # រ៉ាន់ Telegram Bot
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start_command))
