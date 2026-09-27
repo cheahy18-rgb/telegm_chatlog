@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 import threading
 from flask import Flask
 from telegram import Update, ChatPermissions
@@ -28,17 +29,18 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 URL_REGEX = r"(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-z]{2,}[^\s]*)"
 
 # ==========================================
-# 2. FLASK HEALTH CHECK SERVER
+# 2. FLASK HEALTH CHECK SERVER (For UptimeRobot)
 # ==========================================
 app = Flask(__name__)
 
 @app.route("/")
 def health_check():
+    # ឆ្លើយតប 200 OK ទៅកាន់ UptimeRobot ដើម្បីការពារ Error 502 / Sleep
     return "Bot status OK", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # ==========================================
 # 3. SUPABASE HELPER FUNCTIONS
@@ -115,9 +117,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2. ពិនិត្យមើល Moderation ក្នុង Group
     if chat.type in ["group", "supergroup"]:
         # ពិនិត្យមើលថាតើជា Admin ដែរឬទេ (Admin អាចផ្ញើ Link បាន)
-        member = await context.bot.get_chat_member(chat.id, user.id)
-        if member.status in ["administrator", "creator"]:
-            return
+        try:
+            member = await context.bot.get_chat_member(chat.id, user.id)
+            if member.status in ["administrator", "creator"]:
+                return
+        except Exception as e:
+            print(f"⚠️ Could not check admin status: {e}")
 
         # ពិនិត្យមើលថាតើមាន Link ក្នុង Message ឬទេ
         has_url = False
