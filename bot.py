@@ -1,3 +1,4 @@
+from flask import Flask, render_template_string, request
 import os
 import re
 import asyncio
@@ -32,11 +33,71 @@ URL_REGEX = r"(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-z]{2,}[^\s]*)"
 # 2. FLASK HEALTH CHECK SERVER (For UptimeRobot)
 # ==========================================
 app = Flask(__name__)
-
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="km">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Chat Logs Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; padding: 20px; font-family: 'Kantumruy Pro', sans-serif; }
+        .table-container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .badge-group { background-color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <h2 class="mb-4 text-center">📊 Telegram Chat Logs Dashboard</h2>
+        
+        <div class="table-container">
+            <table class="table table-hover table-striped align-middle">
+                <thead class="table-dark">
+                    <tr>
+                        <th>ID</th>
+                        <th>កាលបរិច្ឆេទ</th>
+                        <th>Group / Chat</th>
+                        <th>ឈ្មោះអ្នកផ្ញើ</th>
+                        <th>Username</th>
+                        <th>សារ (Message)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td>{{ log.id }}</td>
+                        <td>{{ log.created_at[:19].replace('T', ' ') }}</td>
+                        <td><span class="badge badge-group">{{ log.group_title }}</span></td>
+                        <td><strong>{{ log.full_name }}</strong></td>
+                        <td>@{{ log.username }}</td>
+                        <td>{{ log.message_text }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យនៅឡើយទេ</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
 @app.route("/")
 def health_check():
     # ឆ្លើយតប 200 OK ទៅកាន់ UptimeRobot ដើម្បីការពារ Error 502 / Sleep
     return "Bot status OK", 200
+@app.route("/logs")
+def view_logs():
+    """ទាញយក Chat Logs ចំនួន 100 សារចុងក្រោយពី Supabase មកបង្ហាញលើ Web"""
+    try:
+        res = supabase.table("chat_logs").select("*").order("created_at", desc=True).limit(100).execute()
+        logs = res.data or []
+        return render_template_string(HTML_TEMPLATE, logs=logs)
+    except Exception as e:
+        return f"Error loading logs: {e}", 500    
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
