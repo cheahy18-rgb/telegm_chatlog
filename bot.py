@@ -1,7 +1,8 @@
 import os
 import re
+import datetime
 import threading
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request, redirect, url_for
 from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -51,9 +52,9 @@ HTML_TEMPLATE = """
     <div class="container-fluid">
         <h2 class="mb-4 text-center">📊 Telegram Chat Logs Dashboard</h2>
         
-        <!-- Filter Form តាម Group -->
-        <div class="row mb-3">
-            <div class="col-md-4 offset-md-4">
+        <!-- Filter Form និង ប៊ូតុង Delete Old Logs -->
+        <div class="row mb-3 align-items-center">
+            <div class="col-md-6 offset-md-1">
                 <form method="GET" action="/logs">
                     <div class="input-group">
                         <label class="input-group-text" for="groupSelect">ជ្រើសរើស Group:</label>
@@ -64,6 +65,11 @@ HTML_TEMPLATE = """
                             {% endfor %}
                         </select>
                     </div>
+                </form>
+            </div>
+            <div class="col-md-4 text-end">
+                <form method="POST" action="/delete-old-logs" onsubmit="return confirm('តើអ្នកពិតជាចង់លុប Chat Logs ដែលមានអាយុកាលលើសពី ៧ ថ្ងៃមែនទេ?');">
+                    <button type="submit" class="btn btn-danger">🗑️ លុប Logs ចាស់ជាង ៧ ថ្ងៃ</button>
                 </form>
             </div>
         </div>
@@ -92,7 +98,7 @@ HTML_TEMPLATE = """
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យសម្រាប់ Group នេះទេ</td>
+                        <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យនៅឡើយទេ</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -103,16 +109,20 @@ HTML_TEMPLATE = """
 </html>
 """
 
+@app.route("/")
+def health_check():
+    return "Bot status OK", 200
+
 @app.route("/logs")
 def view_logs():
     try:
         selected_group = request.args.get("group", "ALL")
         
-        # 1. ទាញយកបញ្ជី Group ទាំងអស់ដែលមានក្នុង Supabase ដើម្បីដាក់ក្នុង Dropdown
+        # 1. ទាញយកបញ្ជី Group ទាំងអស់
         groups_res = supabase.table("chat_logs").select("group_title").execute()
         unique_groups = sorted(list(set([item["group_title"] for item in groups_res.data if item.get("group_title")])))
         
-        # 2. Query ទិន្នន័យ Logs តាម Group ដែលបានជ្រើសរើស
+        # 2. Query ទិន្នន័យ Logs តាម Group
         query = supabase.table("chat_logs").select("*")
         if selected_group != "ALL":
             query = query.eq("group_title", selected_group)
@@ -128,6 +138,21 @@ def view_logs():
         )
     except Exception as e:
         return f"Error loading logs: {e}", 500
+
+@app.route("/delete-old-logs", methods=["POST"])
+def delete_old_logs():
+    """លុបទិន្នន័យ Chat Logs ដែលមានអាយុកាលលើសពី ៧ ថ្ងៃ"""
+    try:
+        # គណនាកាលបរិច្ឆេទ ៧ ថ្ងៃមុន
+        seven_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).isoformat()
+        
+        # លុបទិន្នន័យក្នុង Table chat_logs ដែលមាន created_at តូចជាង (ចាស់ជាង) ៧ ថ្ងៃមុន
+        res = supabase.table("chat_logs").delete().lt("created_at", seven_days_ago).execute()
+        print(f"🗑️ Deleted old logs older than 7 days: {res.data}")
+        
+        return redirect(url_for("view_logs"))
+    except Exception as e:
+        return f"Error deleting old logs: {e}", 500
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -294,7 +319,6 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         if action == "unmute":
-            # បើកសិទ្ធិផ្ញើសារវិញ (Unmute)
             full_permissions = ChatPermissions(
                 can_send_messages=True,
                 can_send_media_messages=True,
@@ -310,7 +334,6 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
 
         elif action == "kick":
-            # ដេញចេញពី Group (Kick / Ban & Unban)
             await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_user_id)
             await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_user_id)
             
@@ -320,7 +343,6 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
 
         elif action == "reset":
-            # Reset Warn Count ទៅ 0
             reset_user_warns(target_user_id, chat_id)
             await query.answer("🔄 បាន Reset ការព្រមានរបស់ User នេះទៅ ០ វិញរួចរាល់!", show_alert=True)
 
@@ -342,5 +364,5 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     application.add_handler(CallbackQueryHandler(handle_button_click))
     
-    print("🚀 Telegram Bot with Admin Control Buttons is running...")
+    print("🚀 Telegram Bot with Admin Control Buttons & Old Logs Cleaner is running...")
     application.run_polling(drop_pending_updates=True)
