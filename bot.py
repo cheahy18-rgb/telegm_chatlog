@@ -50,6 +50,24 @@ HTML_TEMPLATE = """
 <body>
     <div class="container-fluid">
         <h2 class="mb-4 text-center">📊 Telegram Chat Logs Dashboard</h2>
+        
+        <!-- Filter Form តាម Group -->
+        <div class="row mb-3">
+            <div class="col-md-4 offset-md-4">
+                <form method="GET" action="/logs">
+                    <div class="input-group">
+                        <label class="input-group-text" for="groupSelect">ជ្រើសរើស Group:</label>
+                        <select class="form-select" id="groupSelect" name="group" onchange="this.form.submit()">
+                            <option value="ALL" {% if selected_group == 'ALL' %}selected{% endif %}>--- Group ទាំងអស់ ---</option>
+                            {% for g in groups %}
+                                <option value="{{ g }}" {% if selected_group == g %}selected{% endif %}>{{ g }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <div class="table-container">
             <table class="table table-hover table-striped align-middle">
                 <thead class="table-dark">
@@ -74,7 +92,7 @@ HTML_TEMPLATE = """
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យនៅឡើយទេ</td>
+                        <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យសម្រាប់ Group នេះទេ</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -85,16 +103,29 @@ HTML_TEMPLATE = """
 </html>
 """
 
-@app.route("/")
-def health_check():
-    return "Bot status OK", 200
-
 @app.route("/logs")
 def view_logs():
     try:
-        res = supabase.table("chat_logs").select("*").order("created_at", desc=True).limit(100).execute()
+        selected_group = request.args.get("group", "ALL")
+        
+        # 1. ទាញយកបញ្ជី Group ទាំងអស់ដែលមានក្នុង Supabase ដើម្បីដាក់ក្នុង Dropdown
+        groups_res = supabase.table("chat_logs").select("group_title").execute()
+        unique_groups = sorted(list(set([item["group_title"] for item in groups_res.data if item.get("group_title")])))
+        
+        # 2. Query ទិន្នន័យ Logs តាម Group ដែលបានជ្រើសរើស
+        query = supabase.table("chat_logs").select("*")
+        if selected_group != "ALL":
+            query = query.eq("group_title", selected_group)
+            
+        res = query.order("created_at", desc=True).limit(100).execute()
         logs = res.data or []
-        return render_template_string(HTML_TEMPLATE, logs=logs)
+        
+        return render_template_string(
+            HTML_TEMPLATE, 
+            logs=logs, 
+            groups=unique_groups, 
+            selected_group=selected_group
+        )
     except Exception as e:
         return f"Error loading logs: {e}", 500
 
