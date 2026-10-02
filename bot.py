@@ -2,6 +2,7 @@ import os
 import re
 import datetime
 import threading
+import requests
 from flask import Flask, render_template_string, request, redirect, url_for
 from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -46,14 +47,16 @@ HTML_TEMPLATE = """
         body { background-color: #f8f9fa; padding: 20px; font-family: sans-serif; }
         .table-container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         .badge-group { background-color: #0d6efd; }
+        .chat-image { max-width: 150px; max-height: 150px; border-radius: 8px; border: 1px solid #ddd; cursor: pointer; }
+        .chat-image:hover { transform: scale(1.05); transition: 0.2s; }
     </style>
 </head>
 <body>
     <div class="container-fluid">
         <h2 class="mb-4 text-center">📊 Telegram Chat Logs Dashboard</h2>
         
-        <!-- Filter Form និង ប៊ូតុង Delete Old Logs -->
         <div class="row mb-3 align-items-center">
+            <!-- Filter Form តាម Group -->
             <div class="col-md-6 offset-md-1">
                 <form method="GET" action="/logs">
                     <div class="input-group">
@@ -67,9 +70,14 @@ HTML_TEMPLATE = """
                     </div>
                 </form>
             </div>
+
+            <!-- Form ប៊ូតុង Delete -->
             <div class="col-md-4 text-end">
-                <form method="POST" action="/delete-old-logs" onsubmit="return confirm('តើអ្នកពិតជាចង់លុប Chat Logs ដែលមានអាយុកាលលើសពី ៧ ថ្ងៃមែនទេ?');">
-                    <button type="submit" class="btn btn-danger">🗑️ លុប Logs ចាស់ជាង ៧ ថ្ងៃ</button>
+                <form method="POST" action="/delete-old-logs" onsubmit="return confirm('តើអ្នកពិតជាចង់លុប Chat Logs ដែលចាស់ជាង ៧ ថ្ងៃសម្រាប់ {% if selected_group == 'ALL' %}Group ទាំងអស់{% else %}Group {{ selected_group }}{% endif %} មែនទេ?');">
+                    <input type="hidden" name="target_group" value="{{ selected_group }}">
+                    <button type="submit" class="btn btn-danger">
+                        🗑️ លុប Logs > ៧ ថ្ងៃ {% if selected_group != 'ALL' %}({{ selected_group }}){% endif %}
+                    </button>
                 </form>
             </div>
         </div>
@@ -83,7 +91,7 @@ HTML_TEMPLATE = """
                         <th>Group / Chat</th>
                         <th>ឈ្មោះអ្នកផ្ញើ</th>
                         <th>Username</th>
-                        <th>សារ (Message)</th>
+                        <th>សារ / រូបភាព</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -94,7 +102,15 @@ HTML_TEMPLATE = """
                         <td><span class="badge badge-group">{{ log.group_title }}</span></td>
                         <td><strong>{{ log.full_name }}</strong></td>
                         <td>@{{ log.username }}</td>
-                        <td>{{ log.message_text }}</td>
+                        <td>
+                            {% if log.message_text.startswith('http') and (log.message_text.endswith('.jpg') or log.message_text.endswith('.png') or 'chat_images' in log.message_text) %}
+                                <a href="{{ log.message_text }}" target="_blank">
+                                    <img src="{{ log.message_text }}" class="chat-image" alt="Uploaded Image">
+                                </a>
+                            {% else %}
+                                {{ log.message_text }}
+                            {% endif %}
+                        </td>
                     </tr>
                     {% else %}
                     <tr>
@@ -143,14 +159,17 @@ def view_logs():
 def delete_old_logs():
     """លុបទិន្នន័យ Chat Logs ដែលមានអាយុកាលលើសពី ៧ ថ្ងៃ"""
     try:
-        # គណនាកាលបរិច្ឆេទ ៧ ថ្ងៃមុន
+        target_group = request.form.get("target_group", "ALL")
         seven_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).isoformat()
         
-        # លុបទិន្នន័យក្នុង Table chat_logs ដែលមាន created_at តូចជាង (ចាស់ជាង) ៧ ថ្ងៃមុន
-        res = supabase.table("chat_logs").delete().lt("created_at", seven_days_ago).execute()
-        print(f"🗑️ Deleted old logs older than 7 days: {res.data}")
+        query = supabase.table("chat_logs").delete().lt("created_at", seven_days_ago)
+        if target_group != "ALL":
+            query = query.eq("group_title", target_group)
+            
+        res = query.execute()
+        print(f"🗑️ Deleted logs older than 7 days for group [{target_group}]: {res.data}")
         
-        return redirect(url_for("view_logs"))
+        return redirect(url_for("view_logs", group=target_group))
     except Exception as e:
         return f"Error deleting old logs: {e}", 500
 
@@ -159,10 +178,10 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# 3. SUPABASE HELPER FUNCTIONS
+# 3. SUPABASE HELPER FUNCTIONS & IMAGE UPLOAD
 # ==========================================
 def save_chat_log(user_id: int, username: str, full_name: str, chat_id: int, group_title: str, message_text: str):
-    """រក្សាទុកសារចូលក្នុង Table chat_logs"""
+    """រក្សាទុកសារ/URL រូបភាព ចូលក្នុង Table chat_logs"""
     try:
         data = {
             "user_id": user_id,
@@ -175,6 +194,30 @@ def save_chat_log(user_id: int, username: str, full_name: str, chat_id: int, gro
         supabase.table("chat_logs").insert(data).execute()
     except Exception as e:
         print(f"❌ Error saving chat log: {e}")
+
+async def upload_photo_to_supabase(photo_file) -> str:
+    """ទាញយករូបភាពពី Telegram រួច Upload ទៅ Supabase Storage Bucket 'chat_images'"""
+    try:
+        # ទាញយក File path ពី Telegram Server
+        file = await photo_file.get_file()
+        file_bytes = await file.download_as_bytearray()
+
+        # បង្កើតឈ្មោះ File មិនឱ្យស្ទួន (Unique Filename)
+        filename = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{photo_file.file_id[-6:]}.jpg"
+        
+        # Upload ទៅ Supabase Storage Bucket 'chat_images'
+        supabase.storage.from_("chat_images").upload(
+            path=filename,
+            file=bytes(file_bytes),
+            file_options={"content-type": "image/jpeg"}
+        )
+
+        # យក Public URL របស់រូបភាពមកប្រើ
+        public_url = supabase.storage.from_("chat_images").get_public_url(filename)
+        return public_url
+    except Exception as e:
+        print(f"❌ Error uploading photo to Supabase: {e}")
+        return "[📷 រូបភាពមិនអាចរក្សាទុកបានទេ]"
 
 def check_and_warn_user(user_id: int, chat_id: int):
     """ពិនិត្យ និងកើនចំនួន Warn របស់ User ក្នុង Supabase"""
@@ -216,34 +259,51 @@ def reset_user_warns(user_id: int, chat_id: int):
 # 4. TELEGRAM BOT HANDLERS & ADMIN BUTTONS
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 ជម្រាបសួរ! Bot កំពុងដំណើរការ និងកត់ត្រាសារក្នុង Group ដោយស្វ័យប្រវត្តិ។")
+    await update.message.reply_text("👋 ជម្រាបសួរ! Bot កំពុងដំណើរការ និងកត់ត្រាសារ/រូបភាពក្នុង Group ដោយស្វ័យប្រវត្តិ។")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    if not update.message:
         return
 
     user = update.message.from_user
     chat = update.message.chat
-    text = update.message.text
+    text = update.message.text or update.message.caption or ""
 
-    # 1. រក្សាទុកសារគ្រប់ប្រភេទចូល Supabase chat_logs
-    save_chat_log(
-        user_id=user.id,
-        username=user.username,
-        full_name=user.full_name,
-        chat_id=chat.id,
-        group_title=chat.title,
-        message_text=text
-    )
+    # ១. ប្រសិនបើសារនោះជារូបភាព (Photo)
+    if update.message.photo:
+        # យករូបភាពដែលមាន Resolution ច្បាស់ជាងគេ (រូបចុងក្រោយក្នុង Array)
+        photo = update.message.photo[-1]
+        image_url = await upload_photo_to_supabase(photo)
+        
+        # បើមាន Caption ជាមួយរូបភាព ឱ្យភ្ជាប់ជាមួយគ្នា
+        content_to_save = image_url if not text else f"{image_url}\n\n📝 Caption: {text}"
+        
+        save_chat_log(
+            user_id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+            chat_id=chat.id,
+            group_title=chat.title,
+            message_text=content_to_save
+        )
 
-    # 2. ពិនិត្យមើល Moderation ក្នុង Group
-    if chat.type in ["group", "supergroup"]:
-        # ពិនិត្យមើលថាតើជា Admin ដែរឬទេ (Admin អាចផ្ញើ Link បាន)
+    # ២. ប្រសិនបើសារនោះជាអត្ថបទ (Text)
+    elif text:
+        save_chat_log(
+            user_id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+            chat_id=chat.id,
+            group_title=chat.title,
+            message_text=text
+        )
+
+    # ៣. ពិនិត្យមើល Moderation ក្នុង Group (សម្រាប់អត្ថបទ/Link)
+    if chat.type in ["group", "supergroup"] and text:
         member = await context.bot.get_chat_member(chat.id, user.id)
         if member.status in ["administrator", "creator"]:
             return
 
-        # ពិនិត្យមើលថាតើមាន Link ក្នុង Message ឬទេ
         has_url = False
         if update.message.entities:
             for entity in update.message.entities:
@@ -254,14 +314,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not has_url and re.search(URL_REGEX, text):
             has_url = True
 
-        # បើជាសមាជិកធម្មតា ហើយមានផ្ញើ Link
         if has_url:
             try:
                 await update.message.delete()
                 warn_count = check_and_warn_user(user.id, chat.id)
                 
                 if warn_count >= 3:
-                    # Mute អ្នកប្រើប្រាស់ ២៤ ម៉ោង
                     await context.bot.restrict_chat_member(
                         chat_id=chat.id,
                         user_id=user.id,
@@ -269,7 +327,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         until_date=int(update.message.date.timestamp()) + 86400
                     )
                     
-                    # បង្កើត Inline Buttons សម្រាប់ Admin
                     keyboard = [
                         [
                             InlineKeyboardButton("🔊 Unmute (ដោះលែង)", callback_data=f"unmute_{user.id}"),
@@ -307,7 +364,6 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     clicker_user_id = query.from_user.id
     chat_id = query.message.chat_id
 
-    # ពិនិត្យមើលថាតើអ្នកចុច Button ជា Admin ឬទេ
     clicker_member = await context.bot.get_chat_member(chat_id, clicker_user_id)
     if clicker_member.status not in ["administrator", "creator"]:
         await query.answer("⚠️ មានតែ Admin ទេដែល៖ អាចចុចប្រើប្រាស់ Button នេះបាន!", show_alert=True)
@@ -361,8 +417,9 @@ if __name__ == "__main__":
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    # បន្ថែម Filter PHOTO ដើម្បីកត់ត្រារូបភាព
+    application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & (~filters.COMMAND), handle_message))
     application.add_handler(CallbackQueryHandler(handle_button_click))
     
-    print("🚀 Telegram Bot with Admin Control Buttons & Old Logs Cleaner is running...")
+    print("🚀 Telegram Bot with Photo Logger & Dashboard is running...")
     application.run_polling(drop_pending_updates=True)
