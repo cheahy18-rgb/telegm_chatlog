@@ -84,6 +84,33 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="table-container">
+
+            <!-- 1. Pagination ផ្នែកខាងលើ (Top Pagination) -->
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                    <span class="text-muted">បង្ហាញទំព័រទី <strong>{{ page }}</strong> នៃ <strong>{{ total_pages }}</strong> (សរុប {{ total_count }} ជួរ)</span>
+                </div>
+                <nav>
+                    <ul class="pagination mb-0">
+                        <!-- ប៊ូតុង មុន (<) -->
+                        <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                            <a class="page-link" href="{{ url_for('view_logs', group=selected_group, page=page-1) }}">❮ មុន</a>
+                        </li>
+                        
+                        <!-- លេខទំព័រ -->
+                        <li class="page-item active">
+                            <span class="page-link">{{ page }}</span>
+                        </li>
+
+                        <!-- ប៊ូតុង បន្ទាប់ (>) -->
+                        <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+                            <a class="page-link" href="{{ url_for('view_logs', group=selected_group, page=page+1) }}">បន្ទាប់ ❯</a>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+
+            <!-- តារាងបង្ហាញទិន្នន័យ (Logs Table) -->
             <table class="table table-hover table-striped align-middle">
                 <thead class="table-dark">
                     <tr>
@@ -121,7 +148,7 @@ HTML_TEMPLATE = """
                 </tbody>
             </table>
 
-            <!-- ប៊ូតុង បកក្រោយ (<) និង ទៅមុខ (>) -->
+            <!-- 2. Pagination ផ្នែកខាងក្រោម (Bottom Pagination) -->
             <div class="d-flex justify-content-between align-items-center mt-3">
                 <div>
                     <span class="text-muted">បង្ហាញទំព័រទី <strong>{{ page }}</strong> នៃ <strong>{{ total_pages }}</strong> (សរុប {{ total_count }} ជួរ)</span>
