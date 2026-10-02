@@ -143,7 +143,7 @@ def view_logs():
         if selected_group != "ALL":
             query = query.eq("group_title", selected_group)
             
-        res = query.order("created_at", desc=True).limit(100).execute()
+        res = query.order("created_at", desc=True).limit(500).execute()
         logs = res.data or []
         
         return render_template_string(
