@@ -3,6 +3,7 @@ import re
 import datetime
 import threading
 import requests
+import math
 from flask import Flask, render_template_string, request, redirect, url_for
 from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -119,6 +120,32 @@ HTML_TEMPLATE = """
                     {% endfor %}
                 </tbody>
             </table>
+
+            <!-- ប៊ូតុង បកក្រោយ (<) និង ទៅមុខ (>) -->
+            <div class="d-flex justify-content-between align-items-center mt-3">
+                <div>
+                    <span class="text-muted">បង្ហាញទំព័រទី <strong>{{ page }}</strong> នៃ <strong>{{ total_pages }}</strong> (សរុប {{ total_count }} ជួរ)</span>
+                </div>
+                <nav>
+                    <ul class="pagination mb-0">
+                        <!-- ប៊ូតុង មុន (<) -->
+                        <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                            <a class="page-link" href="{{ url_for('view_logs', group=selected_group, page=page-1) }}">❮ មុន</a>
+                        </li>
+                        
+                        <!-- លេខទំព័រ -->
+                        <li class="page-item active">
+                            <span class="page-link">{{ page }}</span>
+                        </li>
+
+                        <!-- ប៊ូតុង បន្ទាប់ (>) -->
+                        <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+                            <a class="page-link" href="{{ url_for('view_logs', group=selected_group, page=page+1) }}">បន្ទាប់ ❯</a>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+
         </div>
     </div>
 </body>
@@ -133,24 +160,47 @@ def health_check():
 def view_logs():
     try:
         selected_group = request.args.get("group", "ALL")
-        
-        # 1. ទាញយកបញ្ជី Group ទាំងអស់
+        page = request.args.get("page", 1, type=int)
+        per_page = 100  # បង្ហាញ ១០០ ជួរក្នុង ១ ទំព័រ
+
+        # ១. ទាញយកបញ្ជី Group ទាំងអស់សម្រាប់ Dropdown
         groups_res = supabase.table("chat_logs").select("group_title").execute()
         unique_groups = sorted(list(set([item["group_title"] for item in groups_res.data if item.get("group_title")])))
-        
-        # 2. Query ទិន្នន័យ Logs តាម Group
+
+        # ២. រាប់ចំនួនទិន្នន័យសរុប (Total Count) ដើម្បីគណនាចំនួនទំព័រ
+        count_query = supabase.table("chat_logs").select("id", count="exact")
+        if selected_group != "ALL":
+            count_query = count_query.eq("group_title", selected_group)
+        count_res = count_query.execute()
+        total_count = count_res.count or 0
+        total_pages = max(1, math.ceil(total_count / per_page))
+
+        # ប្រសិនបើកែប្រែ Page ខុស ឱ្យមក Page 1 វិញ
+        if page < 1:
+            page = 1
+        elif page > total_pages:
+            page = total_pages
+
+        # ៣. គណនា Range (Offset) សម្រាប់ Supabase Pagination (100 ជួរ)
+        start = (page - 1) * per_page
+        end = start + per_page - 1
+
         query = supabase.table("chat_logs").select("*")
         if selected_group != "ALL":
             query = query.eq("group_title", selected_group)
-            
-        res = query.order("created_at", desc=True).limit(500).execute()
+
+        # ទាញយកទិន្នន័យតាម Range ( start -> end )
+        res = query.order("created_at", desc=True).range(start, end).execute()
         logs = res.data or []
-        
+
         return render_template_string(
-            HTML_TEMPLATE, 
-            logs=logs, 
-            groups=unique_groups, 
-            selected_group=selected_group
+            HTML_TEMPLATE,
+            logs=logs,
+            groups=unique_groups,
+            selected_group=selected_group,
+            page=page,
+            total_pages=total_pages,
+            total_count=total_count
         )
     except Exception as e:
         return f"Error loading logs: {e}", 500
