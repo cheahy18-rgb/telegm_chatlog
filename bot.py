@@ -58,7 +58,7 @@ HTML_TEMPLATE = """
         
         <div class="row mb-3 align-items-center">
             <!-- Filter Form តាម Group -->
-            <div class="col-md-6 offset-md-1">
+            <div class="col-md-5">
                 <form method="GET" action="/logs">
                     <div class="input-group">
                         <label class="input-group-text" for="groupSelect">ជ្រើសរើស Group:</label>
@@ -72,13 +72,24 @@ HTML_TEMPLATE = """
                 </form>
             </div>
 
-            <!-- Form ប៊ូតុង Delete -->
-            <div class="col-md-4 text-end">
-                <form method="POST" action="/delete-old-logs" onsubmit="return confirm('តើអ្នកពិតជាចង់លុប Chat Logs ដែលចាស់ជាង ៧ ថ្ងៃសម្រាប់ {% if selected_group == 'ALL' %}Group ទាំងអស់{% else %}Group {{ selected_group }}{% endif %} មែនទេ?');">
+            <!-- Form ជ្រើសរើសចំនួនថ្ងៃ + ប៊ូតុង Delete -->
+            <div class="col-md-7 text-end">
+                <form method="POST" action="/delete-old-logs" class="d-inline-flex float-end" onsubmit="return confirm('តើអ្នកពិតជាចង់លុប Chat Logs ដែលចាស់ជាងចំនួនថ្ងៃដែលបានជ្រើសរើសមែនទេ?');">
                     <input type="hidden" name="target_group" value="{{ selected_group }}">
-                    <button type="submit" class="btn btn-danger">
-                        🗑️ លុប Logs > ៧ ថ្ងៃ {% if selected_group != 'ALL' %}({{ selected_group }}){% endif %}
-                    </button>
+                    
+                    <div class="input-group">
+                        <label class="input-group-text" for="daysSelect">លុបចាស់ជាង:</label>
+                        <select class="form-select" id="daysSelect" name="days_threshold" style="max-width: 130px;">
+                            <option value="3">3 ថ្ងៃ</option>
+                            <option value="7" selected>7 ថ្ងៃ</option>
+                            <option value="14">14 ថ្ងៃ</option>
+                            <option value="30">30 ថ្ងៃ</option>
+                            <option value="60">60 ថ្ងៃ</option>
+                        </select>
+                        <button type="submit" class="btn btn-danger">
+                            🗑️ លុប Logs
+                        </button>
+                    </div>
                 </form>
             </div>
         </div>
@@ -92,17 +103,12 @@ HTML_TEMPLATE = """
                 </div>
                 <nav>
                     <ul class="pagination mb-0">
-                        <!-- ប៊ូតុង មុន (<) -->
                         <li class="page-item {% if page <= 1 %}disabled{% endif %}">
                             <a class="page-link" href="{{ url_for('view_logs', group=selected_group, page=page-1) }}">❮ មុន</a>
                         </li>
-                        
-                        <!-- លេខទំព័រ -->
                         <li class="page-item active">
                             <span class="page-link">{{ page }}</span>
                         </li>
-
-                        <!-- ប៊ូតុង បន្ទាប់ (>) -->
                         <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
                             <a class="page-link" href="{{ url_for('view_logs', group=selected_group, page=page+1) }}">បន្ទាប់ ❯</a>
                         </li>
@@ -155,17 +161,12 @@ HTML_TEMPLATE = """
                 </div>
                 <nav>
                     <ul class="pagination mb-0">
-                        <!-- ប៊ូតុង មុន (<) -->
                         <li class="page-item {% if page <= 1 %}disabled{% endif %}">
                             <a class="page-link" href="{{ url_for('view_logs', group=selected_group, page=page-1) }}">❮ មុន</a>
                         </li>
-                        
-                        <!-- លេខទំព័រ -->
                         <li class="page-item active">
                             <span class="page-link">{{ page }}</span>
                         </li>
-
-                        <!-- ប៊ូតុង បន្ទាប់ (>) -->
                         <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
                             <a class="page-link" href="{{ url_for('view_logs', group=selected_group, page=page+1) }}">បន្ទាប់ ❯</a>
                         </li>
@@ -234,22 +235,60 @@ def view_logs():
 
 @app.route("/delete-old-logs", methods=["POST"])
 def delete_old_logs():
-    """លុបទិន្នន័យ Chat Logs ដែលមានអាយុកាលលើសពី ៧ ថ្ងៃ"""
+    """លុបទិន្នន័យ Chat Logs និង File រូបភាពក្នុង Storage តាមចំនួនថ្ងៃដែលបានជ្រើសរើស"""
     try:
         target_group = request.form.get("target_group", "ALL")
-        seven_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).isoformat()
+        # ទទួលតម្លៃចំនួនថ្ងៃពី Dropdown (តម្លៃ Default គឺ 7 ថ្ងៃ)
+        days_threshold = int(request.form.get("days_threshold", 7))
         
-        query = supabase.table("chat_logs").delete().lt("created_at", seven_days_ago)
+        # គណនាកាលបរិច្ឆេទ Cutoff តាមចំនួនថ្ងៃដែលជ្រើសរើស
+        cutoff_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_threshold)).isoformat()
+        
+        # ----------------------------------------------------
+        # ជំហានទី ១៖ Query រកមើល Logs ដែលត្រូវលុប
+        # ----------------------------------------------------
+        query_select = supabase.table("chat_logs").select("*").lt("created_at", cutoff_date)
         if target_group != "ALL":
-            query = query.eq("group_title", target_group)
+            query_select = query_select.eq("group_title", target_group)
             
-        res = query.execute()
-        print(f"🗑️ Deleted logs older than 7 days for group [{target_group}]: {res.data}")
+        old_logs_res = query_select.execute()
+        old_logs = old_logs_res.data or []
+        
+        print(f"🔍 Found {len(old_logs)} logs older than {days_threshold} days for group [{target_group}]")
+
+        # ----------------------------------------------------
+        # ជំហានទី ២៖ ស្រង់យកឈ្មោះ File រូបភាព (Filenames) ចេញពី Storage URL
+        # ----------------------------------------------------
+        files_to_delete = []
+        for log in old_logs:
+            msg = log.get("message_text", "")
+            if "chat_images" in msg:
+                filename = msg.split("/")[-1].split("?")[0].strip()
+                if filename:
+                    files_to_delete.append(filename)
+        
+        # ----------------------------------------------------
+        # ជំហានទី ៣៖ លុប File រូបភាពចេញពី Supabase Storage Bucket
+        # ----------------------------------------------------
+        if files_to_delete:
+            supabase.storage.from_("chat_images").remove(files_to_delete)
+            print(f"🗑️ Deleted {len(files_to_delete)} images from Storage")
+        
+        # ----------------------------------------------------
+        # ជំហានទី ៤៖ លុប Row ចេញពី Table chat_logs ក្នុង Database
+        # ----------------------------------------------------
+        if old_logs:
+            query_delete = supabase.table("chat_logs").delete().lt("created_at", cutoff_date)
+            if target_group != "ALL":
+                query_delete = query_delete.eq("group_title", target_group)
+                
+            res = query_delete.execute()
+            print(f"🗑️ Successfully deleted {len(res.data)} rows from Database")
         
         return redirect(url_for("view_logs", group=target_group))
     except Exception as e:
+        print(f"❌ Error during delete: {e}")
         return f"Error deleting old logs: {e}", 500
-
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
