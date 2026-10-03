@@ -253,7 +253,7 @@ HTML_TEMPLATE = """
 # ----------------------------------------------------
 @app.route("/")
 def home():
-    return "Telegram Chat Monitor is Running!", 200
+    return redirect(url_for("view_logs"))
 
 @app.route("/logs")
 def view_logs():
