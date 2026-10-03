@@ -1,42 +1,22 @@
-import os
-import re
 import datetime
-import threading
-import requests
 import math
-from flask import Flask, render_template_string, request, redirect, url_for
-from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
+import os
+from flask import Flask, flash, redirect, render_template_string, request, url_for
 from supabase import create_client, Client
 
-# ==========================================
-# 1. SETUP ENVIRONMENT & SUPABASE
-# ==========================================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+app = Flask(__name__)
+app.secret_key = "super_secret_key_for_flash_messages"
 
-if not TELEGRAM_BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
-    print("❌ Error: Missing required Environment Variables!")
-
+# ----------------------------------------------------
+# ១. ការភ្ជាប់ទៅកាន់ Supabase
+# ----------------------------------------------------
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_ANON_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Regex សម្រាប់ស្វែងរក Link/URL
-URL_REGEX = r"(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-z]{2,}[^\s]*)"
-
-# ==========================================
-# 2. FLASK HEALTH CHECK & DASHBOARD SERVER
-# ==========================================
-app = Flask(__name__)
-app.secret_key = "super_secret_key_for_flash_messages"  # ត្រូវបន្ថែមបន្ទាត់នេះដើម្បីប្រើ flash message បាន
-
+# ----------------------------------------------------
+# ២. HTML Template (UI Dashboard)
+# ----------------------------------------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="km">
@@ -46,15 +26,59 @@ HTML_TEMPLATE = """
     <title>Telegram Chat Logs Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f8f9fa; padding: 20px; font-family: sans-serif; }
+        body { background-color: #f8f9fa; padding: 20px; font-family: 'Kantumruy Pro', sans-serif, system-ui; }
         .table-container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         .badge-group { background-color: #0d6efd; }
         .chat-image { max-width: 150px; max-height: 150px; border-radius: 8px; border: 1px solid #ddd; cursor: pointer; }
         .chat-image:hover { transform: scale(1.05); transition: 0.2s; }
+
+        /* ---------------------------------------------------- */
+        /* ស្ទាយសម្រាប់ Table Scrollbar & ប៊ូតុងរំកិល ▲ ▼  */
+        /* ---------------------------------------------------- */
+        .dashboard-table-wrapper {
+            position: relative;
+        }
+
+        .custom-table-scroll {
+            max-height: 650px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+        }
+
+        /* ទីតាំងប៊ូតុង ▲ ▼ នៅចំហៀងស្តាំតារាង */
+        .table-scroll-buttons {
+            position: absolute;
+            right: -45px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 100;
+        }
+
+        .btn-scroll-action {
+            width: 38px;
+            height: 38px;
+            background-color: #0d6efd;
+            color: #ffffff;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 14px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            transition: background-color 0.2s, transform 0.1s;
+        }
+
+        .btn-scroll-action:hover {
+            background-color: #0b5ed7;
+            transform: scale(1.1);
+        }
     </style>
 </head>
 <body>
-    <div class="container-fluid">
+    <div class="container-fluid" style="max-width: 95%;">
         <h2 class="mb-4 text-center">📊 Telegram Chat Logs Dashboard</h2>
         
         <!-- ផ្នែកបង្ហាញសារ Alert ក្រោយពេលលុបទិន្នន័យ -->
@@ -100,7 +124,7 @@ HTML_TEMPLATE = """
                             <option value="60">60 ថ្ងៃ</option>
                         </select>
                         <button type="submit" class="btn btn-danger">
-                            🗑️️ លុប Logs
+                            🗑️ លុប Logs
                         </button>
                     </div>
                 </form>
@@ -109,7 +133,7 @@ HTML_TEMPLATE = """
 
         <div class="table-container">
 
-            <!-- 1. Pagination ផ្នែកខាងលើ (Top Pagination) -->
+            <!-- ១. Pagination ផ្នែកខាងលើ (Top Pagination) -->
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <div>
                     <span class="text-muted">បង្ហាញទំព័រទី <strong>{{ page }}</strong> នៃ <strong>{{ total_pages }}</strong> (សរុប {{ total_count }} ជួរ)</span>
@@ -129,45 +153,58 @@ HTML_TEMPLATE = """
                 </nav>
             </div>
 
-            <!-- តារាងបង្ហាញទិន្នន័យ (Logs Table) -->
-            <table class="table table-hover table-striped align-middle">
-                <thead class="table-dark">
-                    <tr>
-                        <th>ID</th>
-                        <th>កាលបរិច្ឆេទ</th>
-                        <th>Group / Chat</th>
-                        <th>ឈ្មោះអ្នកផ្ញើ</th>
-                        <th>Username</th>
-                        <th>សារ / រូបភាព</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for log in logs %}
-                    <tr>
-                        <td>{{ log.id }}</td>
-                        <td>{{ log.created_at[:19].replace('T', ' ') }}</td>
-                        <td><span class="badge badge-group">{{ log.group_title }}</span></td>
-                        <td><strong>{{ log.full_name }}</strong></td>
-                        <td>@{{ log.username }}</td>
-                        <td>
-                            {% if log.message_text.startswith('http') and (log.message_text.endswith('.jpg') or log.message_text.endswith('.png') or 'chat_images' in log.message_text) %}
-                                <a href="{{ log.message_text }}" target="_blank">
-                                    <img src="{{ log.message_text }}" class="chat-image" alt="Uploaded Image">
-                                </a>
+            <!-- ២. Wrapper ស្រោបតារាង និងប៊ូតុង Scroll ▲ ▼ -->
+            <div class="dashboard-table-wrapper">
+                
+                <!-- Div មាន Scrollbar ផ្ទាល់ខ្លួន -->
+                <div id="table-scroll-container" class="custom-table-scroll">
+                    <table class="table table-hover table-striped align-middle mb-0">
+                        <thead class="table-dark style="position: sticky; top: 0; z-index: 10;">
+                            <tr>
+                                <th>ID</th>
+                                <th>កាលបរិច្ឆេទ</th>
+                                <th>Group / Chat</th>
+                                <th>ឈ្មោះអ្នកផ្ញើ</th>
+                                <th>Username</th>
+                                <th>សារ / រូបភាព</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for log in logs %}
+                            <tr>
+                                <td>{{ log.id }}</td>
+                                <td>{{ log.created_at[:19].replace('T', ' ') }}</td>
+                                <td><span class="badge badge-group">{{ log.group_title }}</span></td>
+                                <td><strong>{{ log.full_name }}</strong></td>
+                                <td>@{{ log.username }}</td>
+                                <td>
+                                    {% if log.message_text.startswith('http') and (log.message_text.endswith('.jpg') or log.message_text.endswith('.png') or 'chat_images' in log.message_text) %}
+                                        <a href="{{ log.message_text }}" target="_blank">
+                                            <img src="{{ log.message_text }}" class="chat-image" alt="Uploaded Image">
+                                        </a>
+                                    {% else %}
+                                        {{ log.message_text }}
+                                    {% endif %}
+                                </td>
+                            </tr>
                             {% else %}
-                                {{ log.message_text }}
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr>
-                        <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យនៅឡើយទេ</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+                            <tr>
+                                <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យនៅឡើយទេ</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
 
-            <!-- 2. Pagination ផ្នែកខាងក្រោម (Bottom Pagination) -->
+                <!-- ប៊ូតុងរំកិល ▲ និង ▼ នៅខាងស្តាំតារាង -->
+                <div class="table-scroll-buttons">
+                    <button type="button" class="btn-scroll-action" onclick="scrollTableContainer(-250)" title="Scroll ឡើងលើ">▲</button>
+                    <button type="button" class="btn-scroll-action" onclick="scrollTableContainer(250)" title="Scroll ចុះក្រោម">▼</button>
+                </div>
+
+            </div>
+
+            <!-- ៣. Pagination ផ្នែកខាងក្រោម (Bottom Pagination) -->
             <div class="d-flex justify-content-between align-items-center mt-3">
                 <div>
                     <span class="text-muted">បង្ហាញទំព័រទី <strong>{{ page }}</strong> នៃ <strong>{{ total_pages }}</strong> (សរុប {{ total_count }} ជួរ)</span>
@@ -189,16 +226,27 @@ HTML_TEMPLATE = """
 
         </div>
     </div>
-    
-    <!-- Script សម្រាប់បិទ Alert -->
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // មុខងារសម្រាប់បញ្ជា Scroll ក្នុង Table Container
+        function scrollTableContainer(offset) {
+            const container = document.getElementById('table-scroll-container');
+            if (container) {
+                container.scrollBy({
+                    top: offset,
+                    behavior: 'smooth'
+                });
+            }
+        }
+    </script>
 </body>
 </html>
 """
-@app.route("/")
-def health_check():
-    return "Bot status OK", 200
 
+# ----------------------------------------------------
+# ៣. Route បង្ហាញ Dashboard (/logs)
+# ----------------------------------------------------
 @app.route("/logs")
 def view_logs():
     try:
@@ -218,13 +266,12 @@ def view_logs():
         total_count = count_res.count or 0
         total_pages = max(1, math.ceil(total_count / per_page))
 
-        # ប្រសិនបើកែប្រែ Page ខុស ឱ្យមក Page 1 វិញ
         if page < 1:
             page = 1
         elif page > total_pages:
             page = total_pages
 
-        # ៣. គណនា Range (Offset) សម្រាប់ Supabase Pagination (100 ជួរ)
+        # ៣. គណនា Range (Offset) សម្រាប់ Supabase Pagination
         start = (page - 1) * per_page
         end = start + per_page - 1
 
@@ -232,7 +279,6 @@ def view_logs():
         if selected_group != "ALL":
             query = query.eq("group_title", selected_group)
 
-        # ទាញយកទិន្នន័យតាម Range ( start -> end )
         res = query.order("created_at", desc=True).range(start, end).execute()
         logs = res.data or []
 
@@ -248,35 +294,27 @@ def view_logs():
     except Exception as e:
         return f"Error loading logs: {e}", 500
 
-from flask import flash, redirect, render_template_string, request, url_for
-
-
+# ----------------------------------------------------
+# ៤. Route លុបទិន្នន័យ និង File រូបភាព (/delete-old-logs)
+# ----------------------------------------------------
 @app.route("/delete-old-logs", methods=["POST"])
 def delete_old_logs():
-    """លុបទិន្នន័យ Chat Logs និង File រូបភាពក្នុង Storage តាមចំនួនថ្ងៃដែលបានជ្រើសរើស"""
     try:
         target_group = request.form.get("target_group", "ALL")
         days_threshold = int(request.form.get("days_threshold", 7))
-
-        cutoff_date = (
-            datetime.datetime.now(datetime.timezone.utc)
-            - datetime.timedelta(days=days_threshold)
-        ).isoformat()
-
-        # 1. Query រកមើល Logs ដែលត្រូវលុប
-        query_select = (
-            supabase.table("chat_logs")
-            .select("*")
-            .lt("created_at", cutoff_date)
-        )
+        
+        cutoff_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_threshold)).isoformat()
+        
+        # ជំហានទី ១៖ Query រកមើល Logs ដែលត្រូវលុប
+        query_select = supabase.table("chat_logs").select("*").lt("created_at", cutoff_date)
         if target_group != "ALL":
             query_select = query_select.eq("group_title", target_group)
-
+            
         old_logs_res = query_select.execute()
         old_logs = old_logs_res.data or []
         deleted_rows_count = len(old_logs)
 
-        # 2. ស្រង់យកឈ្មោះ File រូបភាព
+        # ជំហានទី ២៖ ស្រង់យកឈ្មោះ File រូបភាព
         files_to_delete = []
         for log in old_logs:
             msg = log.get("message_text", "")
@@ -284,321 +322,31 @@ def delete_old_logs():
                 filename = msg.split("/")[-1].split("?")[0].strip()
                 if filename:
                     files_to_delete.append(filename)
-
-        # 3. លុប File រូបភាពចេញពី Storage
+        
+        # ជំហានទី ៣៖ លុប File រូបភាពចេញពី Storage Bucket
         deleted_images_count = len(files_to_delete)
         if files_to_delete:
             supabase.storage.from_("chat_images").remove(files_to_delete)
 
-        # 4. លុប Row ចេញពី Database
+        # ជំហានទី ៤៖ លុប Row ចេញពី Database
         if old_logs:
-            query_delete = (
-                supabase.table("chat_logs")
-                .delete()
-                .lt("created_at", cutoff_date)
-            )
+            query_delete = supabase.table("chat_logs").delete().lt("created_at", cutoff_date)
             if target_group != "ALL":
                 query_delete = query_delete.eq("group_title", target_group)
             query_delete.execute()
-
-            # បញ្ជូនសារ Alert ជោគជ័យ
+            
             msg = f"✅ បានលុប Chat Logs ចំនួន {deleted_rows_count} ជួរដេក (ចាស់ជាង {days_threshold} ថ្ងៃ)"
             if deleted_images_count > 0:
                 msg += f" និងរូបភាពចំនួន {deleted_images_count} រូបចេញពី Storage ដោយជោគជ័យ!"
             flash(msg, "success")
         else:
-            # បើគ្មានទិន្នន័យត្រូវលុប
-            flash(
-                f"ℹ️ មិនមាន Chat Logs ណាដែលចាស់ជាង {days_threshold} ថ្ងៃ ត្រូវលុបឡើយ។",
-                "info",
-            )
-
+            flash(f"ℹ️ មិនមាន Chat Logs ណាដែលចាស់ជាង {days_threshold} ថ្ងៃ ត្រូវលុបឡើយ។", "info")
+            
         return redirect(url_for("view_logs", group=target_group))
     except Exception as e:
         print(f"❌ Error during delete: {e}")
         flash(f"❌ មានបញ្ហាក្នុងការលុបទិន្នន័យ៖ {e}", "danger")
         return redirect(url_for("view_logs", group=target_group))
 
-        # ----------------------------------------------------
-        # ជំហានទី ២៖ ស្រង់យកឈ្មោះ File រូបភាព (Filenames) ចេញពី Storage URL
-        # ----------------------------------------------------
-        files_to_delete = []
-        for log in old_logs:
-            msg = log.get("message_text", "")
-            if "chat_images" in msg:
-                filename = msg.split("/")[-1].split("?")[0].strip()
-                if filename:
-                    files_to_delete.append(filename)
-        
-        # ----------------------------------------------------
-        # ជំហានទី ៣៖ លុប File រូបភាពចេញពី Supabase Storage Bucket
-        # ----------------------------------------------------
-        if files_to_delete:
-            supabase.storage.from_("chat_images").remove(files_to_delete)
-            print(f"🗑️ Deleted {len(files_to_delete)} images from Storage")
-        
-        # ----------------------------------------------------
-        # ជំហានទី ៤៖ លុប Row ចេញពី Table chat_logs ក្នុង Database
-        # ----------------------------------------------------
-        if old_logs:
-            query_delete = supabase.table("chat_logs").delete().lt("created_at", cutoff_date)
-            if target_group != "ALL":
-                query_delete = query_delete.eq("group_title", target_group)
-                
-            res = query_delete.execute()
-            print(f"🗑️ Successfully deleted {len(res.data)} rows from Database")
-        
-        return redirect(url_for("view_logs", group=target_group))
-    except Exception as e:
-        print(f"❌ Error during delete: {e}")
-        return f"Error deleting old logs: {e}", 500
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-# ==========================================
-# 3. SUPABASE HELPER FUNCTIONS & IMAGE UPLOAD
-# ==========================================
-def save_chat_log(user_id: int, username: str, full_name: str, chat_id: int, group_title: str, message_text: str):
-    """រក្សាទុកសារ/URL រូបភាព ចូលក្នុង Table chat_logs"""
-    try:
-        data = {
-            "user_id": user_id,
-            "username": username or "Unknown",
-            "full_name": full_name or "Unknown",
-            "chat_id": chat_id,
-            "group_title": group_title or "Private",
-            "message_text": message_text
-        }
-        supabase.table("chat_logs").insert(data).execute()
-    except Exception as e:
-        print(f"❌ Error saving chat log: {e}")
-
-async def upload_photo_to_supabase(photo_file) -> str:
-    """ទាញយករូបភាពពី Telegram រួច Upload ទៅ Supabase Storage Bucket 'chat_images'"""
-    try:
-        # ទាញយក File path ពី Telegram Server
-        file = await photo_file.get_file()
-        file_bytes = await file.download_as_bytearray()
-
-        # បង្កើតឈ្មោះ File មិនឱ្យស្ទួន (Unique Filename)
-        filename = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{photo_file.file_id[-6:]}.jpg"
-        
-        # Upload ទៅ Supabase Storage Bucket 'chat_images'
-        supabase.storage.from_("chat_images").upload(
-            path=filename,
-            file=bytes(file_bytes),
-            file_options={"content-type": "image/jpeg"}
-        )
-
-        # យក Public URL របស់រូបភាពមកប្រើ
-        public_url = supabase.storage.from_("chat_images").get_public_url(filename)
-        return public_url
-    except Exception as e:
-        print(f"❌ Error uploading photo to Supabase: {e}")
-        return "[📷 រូបភាពមិនអាចរក្សាទុកបានទេ]"
-
-def check_and_warn_user(user_id: int, chat_id: int):
-    """ពិនិត្យ និងកើនចំនួន Warn របស់ User ក្នុង Supabase"""
-    try:
-        res = supabase.table("user_warns").select("warn_count").eq("user_id", user_id).eq("chat_id", chat_id).execute()
-        
-        if res.data and len(res.data) > 0:
-            current_warn = res.data[0]["warn_count"]
-            new_warn = current_warn + 1
-            
-            supabase.table("user_warns").update({
-                "warn_count": new_warn,
-                "updated_at": "now()"
-            }).eq("user_id", user_id).eq("chat_id", chat_id).execute()
-        else:
-            new_warn = 1
-            supabase.table("user_warns").insert({
-                "user_id": user_id,
-                "chat_id": chat_id,
-                "warn_count": new_warn
-            }).execute()
-            
-        return new_warn
-    except Exception as e:
-        print(f"❌ Error updating warn count: {e}")
-        return 1
-
-def reset_user_warns(user_id: int, chat_id: int):
-    """លុប/កំណត់ចំនួន Warn ឡើងវិញ (Reset ទៅ 0)"""
-    try:
-        supabase.table("user_warns").update({
-            "warn_count": 0,
-            "updated_at": "now()"
-        }).eq("user_id", user_id).eq("chat_id", chat_id).execute()
-    except Exception as e:
-        print(f"❌ Error resetting warn count: {e}")
-
-# ==========================================
-# 4. TELEGRAM BOT HANDLERS & ADMIN BUTTONS
-# ==========================================
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 ជម្រាបសួរ! Bot កំពុងដំណើរការ និងកត់ត្រាសារ/រូបភាពក្នុង Group ដោយស្វ័យប្រវត្តិ។")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-
-    user = update.message.from_user
-    chat = update.message.chat
-    text = update.message.text or update.message.caption or ""
-
-    # ១. ប្រសិនបើសារនោះជារូបភាព (Photo)
-    if update.message.photo:
-        # យករូបភាពដែលមាន Resolution ច្បាស់ជាងគេ (រូបចុងក្រោយក្នុង Array)
-        photo = update.message.photo[-1]
-        image_url = await upload_photo_to_supabase(photo)
-        
-        # បើមាន Caption ជាមួយរូបភាព ឱ្យភ្ជាប់ជាមួយគ្នា
-        content_to_save = image_url if not text else f"{image_url}\n\n📝 Caption: {text}"
-        
-        save_chat_log(
-            user_id=user.id,
-            username=user.username,
-            full_name=user.full_name,
-            chat_id=chat.id,
-            group_title=chat.title,
-            message_text=content_to_save
-        )
-
-    # ២. ប្រសិនបើសារនោះជាអត្ថបទ (Text)
-    elif text:
-        save_chat_log(
-            user_id=user.id,
-            username=user.username,
-            full_name=user.full_name,
-            chat_id=chat.id,
-            group_title=chat.title,
-            message_text=text
-        )
-
-    # ៣. ពិនិត្យមើល Moderation ក្នុង Group (សម្រាប់អត្ថបទ/Link)
-    if chat.type in ["group", "supergroup"] and text:
-        member = await context.bot.get_chat_member(chat.id, user.id)
-        if member.status in ["administrator", "creator"]:
-            return
-
-        has_url = False
-        if update.message.entities:
-            for entity in update.message.entities:
-                if entity.type in ["url", "text_link"]:
-                    has_url = True
-                    break
-                    
-        if not has_url and re.search(URL_REGEX, text):
-            has_url = True
-
-        if has_url:
-            try:
-                await update.message.delete()
-                warn_count = check_and_warn_user(user.id, chat.id)
-                
-                if warn_count >= 3:
-                    await context.bot.restrict_chat_member(
-                        chat_id=chat.id,
-                        user_id=user.id,
-                        permissions=ChatPermissions(can_send_messages=False),
-                        until_date=int(update.message.date.timestamp()) + 86400
-                    )
-                    
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("🔊 Unmute (ដោះលែង)", callback_data=f"unmute_{user.id}"),
-                            InlineKeyboardButton("👞 Kick (ដេញចេញ)", callback_data=f"kick_{user.id}")
-                        ],
-                        [
-                            InlineKeyboardButton("🔄 Reset Warnings", callback_data=f"reset_{user.id}")
-                        ]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-
-                    await context.bot.send_message(
-                        chat_id=chat.id,
-                        text=(
-                            f"🚫 <b>{user.full_name}</b> (@{user.username or 'NoUsername'}) "
-                            f"ត្រូវបាន Mute រយៈពេល ២៤ ម៉ោង ដោយសារតែការផ្ញើ Link លើសពី ៣ ដង!\n\n"
-                            f"🛠️ <b>សម្រាប់ Admin រៀបចំ៖</b>"
-                        ),
-                        parse_mode="HTML",
-                        reply_markup=reply_markup
-                    )
-                else:
-                    await context.bot.send_message(
-                        chat_id=chat.id,
-                        text=f"⚠️ {user.full_name} មិនអនុញ្ញាតឱ្យផ្ញើ Link ក្នុង Group នេះទេ!\n(ការព្រមានលើកទី {warn_count}/3)"
-                    )
-            except Exception as e:
-                print(f"❌ Error in moderation: {e}")
-
-async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """គ្រប់គ្រងការចុច Button (Unmute / Kick / Reset) ដោយបញ្ជាក់សិទ្ធិ Admin"""
-    query = update.callback_query
-    await query.answer()
-
-    clicker_user_id = query.from_user.id
-    chat_id = query.message.chat_id
-
-    clicker_member = await context.bot.get_chat_member(chat_id, clicker_user_id)
-    if clicker_member.status not in ["administrator", "creator"]:
-        await query.answer("⚠️ មានតែ Admin ទេដែល៖ អាចចុចប្រើប្រាស់ Button នេះបាន!", show_alert=True)
-        return
-
-    data = query.data
-    action, target_user_id = data.split("_")
-    target_user_id = int(target_user_id)
-
-    try:
-        if action == "unmute":
-            full_permissions = ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True
-            )
-            await context.bot.restrict_chat_member(chat_id=chat_id, user_id=target_user_id, permissions=full_permissions)
-            reset_user_warns(target_user_id, chat_id)
-            
-            await query.edit_message_text(
-                text=f"✅ User ID: <code>{target_user_id}</code> ត្រូវបាន Admin <b>{query.from_user.full_name}</b> ដោះ Unmute និង Reset ការព្រមានរួចរាល់!",
-                parse_mode="HTML"
-            )
-
-        elif action == "kick":
-            await context.bot.ban_chat_member(chat_id=chat_id, user_id=target_user_id)
-            await context.bot.unban_chat_member(chat_id=chat_id, user_id=target_user_id)
-            
-            await query.edit_message_text(
-                text=f"👞 User ID: <code>{target_user_id}</code> ត្រូវបាន Admin <b>{query.from_user.full_name}</b> Kick ចេញពី Group រួចរាល់!",
-                parse_mode="HTML"
-            )
-
-        elif action == "reset":
-            reset_user_warns(target_user_id, chat_id)
-            await query.answer("🔄 បាន Reset ការព្រមានរបស់ User នេះទៅ ០ វិញរួចរាល់!", show_alert=True)
-
-    except Exception as e:
-        print(f"❌ Error handling button action: {e}")
-        await query.answer("❌ មានបញ្ហាក្នុងការអនុវត្តសកម្មភាពនេះ (សូមពិនិត្យសិទ្ធិ Admin របស់ Bot)!", show_alert=True)
-
-# ==========================================
-# 5. MAIN EXECUTION
-# ==========================================
 if __name__ == "__main__":
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start_command))
-    # បន្ថែម Filter PHOTO ដើម្បីកត់ត្រារូបភាព
-    application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & (~filters.COMMAND), handle_message))
-    application.add_handler(CallbackQueryHandler(handle_button_click))
-    
-    print("🚀 Telegram Bot with Photo Logger & Dashboard is running...")
-    application.run_polling(drop_pending_updates=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
