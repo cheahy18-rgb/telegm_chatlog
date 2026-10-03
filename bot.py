@@ -251,6 +251,10 @@ HTML_TEMPLATE = """
 # ----------------------------------------------------
 # ៣. Route បង្ហាញ Dashboard (/logs)
 # ----------------------------------------------------
+@app.route("/")
+def home():
+    return "Telegram Chat Monitor is Running!", 200
+
 @app.route("/logs")
 def view_logs():
     try:
