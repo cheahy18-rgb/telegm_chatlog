@@ -251,9 +251,7 @@ HTML_TEMPLATE = """
 # ----------------------------------------------------
 # ៣. Route បង្ហាញ Dashboard (/logs)
 # ----------------------------------------------------
-@app.route("/")
-def home():
-    return redirect(url_for("view_logs"))
+
 
 @app.route("/logs")
 def view_logs():
