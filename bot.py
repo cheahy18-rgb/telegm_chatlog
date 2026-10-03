@@ -159,40 +159,45 @@ HTML_TEMPLATE = """
                 <!-- Div មាន Scrollbar ផ្ទាល់ខ្លួន -->
                 <div id="table-scroll-container" class="custom-table-scroll">
                     <table class="table table-hover table-striped align-middle mb-0">
-                        <thead class="table-dark style="position: sticky; top: 0; z-index: 10;">
-                            <tr>
-                                <th>ID</th>
-                                <th>កាលបរិច្ឆេទ</th>
-                                <th>Group / Chat</th>
-                                <th>ឈ្មោះអ្នកផ្ញើ</th>
-                                <th>Username</th>
-                                <th>សារ / រូបភាព</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for log in logs %}
-                            <tr>
-                                <td>{{ log.id }}</td>
-                                <td>{{ log.created_at[:19].replace('T', ' ') }}</td>
-                                <td><span class="badge badge-group">{{ log.group_title }}</span></td>
-                                <td><strong>{{ log.full_name }}</strong></td>
-                                <td>@{{ log.username }}</td>
-                                <td>
-                                    {% if log.message_text.startswith('http') and (log.message_text.endswith('.jpg') or log.message_text.endswith('.png') or 'chat_images' in log.message_text) %}
-                                        <a href="{{ log.message_text }}" target="_blank">
-                                            <img src="{{ log.message_text }}" class="chat-image" alt="Uploaded Image">
-                                        </a>
-                                    {% else %}
-                                        {{ log.message_text }}
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% else %}
-                            <tr>
-                                <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យនៅឡើយទេ</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
+                        <!-- ១. កែប្រែក្បាលតារាងពី ID ទៅ លេខរៀង -->
+<thead class="table-dark" style="position: sticky; top: 0; z-index: 10;">
+    <tr>
+        <th>ល.រ</th> <!-- ប្តូរពី ID មក ល.រ -->
+        <th>កាលបរិច្ឆេទ</th>
+        <th>Group / Chat</th>
+        <th>ឈ្មោះអ្នកផ្ញើ</th>
+        <th>Username</th>
+        <th>សារ / រូបភាព</th>
+    </tr>
+</thead>
+
+<!-- ២. កែប្រែផ្នែករាប់លេខរៀងក្នុង <tbody> -->
+<tbody>
+    {% for log in logs %}
+    <tr>
+        <!-- គណនាលេខរៀងរត់បន្តតាមទំព័រ (1, 2, 3... ឬ 101, 102...) -->
+        <td><strong>{{ (page - 1) * 100 + loop.index }}</strong></td>
+        
+        <td>{{ log.created_at[:19].replace('T', ' ') }}</td>
+        <td><span class="badge badge-group">{{ log.group_title }}</span></td>
+        <td><strong>{{ log.full_name }}</strong></td>
+        <td>@{{ log.username }}</td>
+        <td>
+            {% if log.message_text.startswith('http') and (log.message_text.endswith('.jpg') or log.message_text.endswith('.png') or 'chat_images' in log.message_text) %}
+                <a href="{{ log.message_text }}" target="_blank">
+                    <img src="{{ log.message_text }}" class="chat-image" alt="Uploaded Image">
+                </a>
+            {% else %}
+                {{ log.message_text }}
+            {% endif %}
+        </td>
+    </tr>
+    {% else %}
+    <tr>
+        <td colspan="6" class="text-center">មិនទាន់មានទិន្នន័យនៅឡើយទេ</td>
+    </tr>
+    {% endfor %}
+</tbody>
                     </table>
                 </div>
 
