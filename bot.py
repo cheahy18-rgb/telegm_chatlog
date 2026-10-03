@@ -35,6 +35,7 @@ URL_REGEX = r"(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-z]{2,}[^\s]*)"
 # 2. FLASK HEALTH CHECK & DASHBOARD SERVER
 # ==========================================
 app = Flask(__name__)
+app.secret_key = "super_secret_key_for_flash_messages"  # ត្រូវបន្ថែមបន្ទាត់នេះដើម្បីប្រើ flash message បាន
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -56,6 +57,18 @@ HTML_TEMPLATE = """
     <div class="container-fluid">
         <h2 class="mb-4 text-center">📊 Telegram Chat Logs Dashboard</h2>
         
+        <!-- ផ្នែកបង្ហាញសារ Alert ក្រោយពេលលុបទិន្នន័យ -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert alert-{{ category }} alert-dismissible fade show text-center mb-4" role="alert">
+                <strong>{{ message }}</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
         <div class="row mb-3 align-items-center">
             <!-- Filter Form តាម Group -->
             <div class="col-md-5">
@@ -87,7 +100,7 @@ HTML_TEMPLATE = """
                             <option value="60">60 ថ្ងៃ</option>
                         </select>
                         <button type="submit" class="btn btn-danger">
-                            🗑️ លុប Logs
+                            🗑️️ លុប Logs
                         </button>
                     </div>
                 </form>
@@ -176,10 +189,12 @@ HTML_TEMPLATE = """
 
         </div>
     </div>
+    
+    <!-- Script សម្រាប់បិទ Alert -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
-
 @app.route("/")
 def health_check():
     return "Bot status OK", 200
@@ -233,28 +248,76 @@ def view_logs():
     except Exception as e:
         return f"Error loading logs: {e}", 500
 
+from flask import flash, redirect, render_template_string, request, url_for
+
+
 @app.route("/delete-old-logs", methods=["POST"])
 def delete_old_logs():
     """លុបទិន្នន័យ Chat Logs និង File រូបភាពក្នុង Storage តាមចំនួនថ្ងៃដែលបានជ្រើសរើស"""
     try:
         target_group = request.form.get("target_group", "ALL")
-        # ទទួលតម្លៃចំនួនថ្ងៃពី Dropdown (តម្លៃ Default គឺ 7 ថ្ងៃ)
         days_threshold = int(request.form.get("days_threshold", 7))
-        
-        # គណនាកាលបរិច្ឆេទ Cutoff តាមចំនួនថ្ងៃដែលជ្រើសរើស
-        cutoff_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_threshold)).isoformat()
-        
-        # ----------------------------------------------------
-        # ជំហានទី ១៖ Query រកមើល Logs ដែលត្រូវលុប
-        # ----------------------------------------------------
-        query_select = supabase.table("chat_logs").select("*").lt("created_at", cutoff_date)
+
+        cutoff_date = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(days=days_threshold)
+        ).isoformat()
+
+        # 1. Query រកមើល Logs ដែលត្រូវលុប
+        query_select = (
+            supabase.table("chat_logs")
+            .select("*")
+            .lt("created_at", cutoff_date)
+        )
         if target_group != "ALL":
             query_select = query_select.eq("group_title", target_group)
-            
+
         old_logs_res = query_select.execute()
         old_logs = old_logs_res.data or []
-        
-        print(f"🔍 Found {len(old_logs)} logs older than {days_threshold} days for group [{target_group}]")
+        deleted_rows_count = len(old_logs)
+
+        # 2. ស្រង់យកឈ្មោះ File រូបភាព
+        files_to_delete = []
+        for log in old_logs:
+            msg = log.get("message_text", "")
+            if "chat_images" in msg:
+                filename = msg.split("/")[-1].split("?")[0].strip()
+                if filename:
+                    files_to_delete.append(filename)
+
+        # 3. លុប File រូបភាពចេញពី Storage
+        deleted_images_count = len(files_to_delete)
+        if files_to_delete:
+            supabase.storage.from_("chat_images").remove(files_to_delete)
+
+        # 4. លុប Row ចេញពី Database
+        if old_logs:
+            query_delete = (
+                supabase.table("chat_logs")
+                .delete()
+                .lt("created_at", cutoff_date)
+            )
+            if target_group != "ALL":
+                query_delete = query_delete.eq("group_title", target_group)
+            query_delete.execute()
+
+            # បញ្ជូនសារ Alert ជោគជ័យ
+            msg = f"✅ បានលុប Chat Logs ចំនួន {deleted_rows_count} ជួរដេក (ចាស់ជាង {days_threshold} ថ្ងៃ)"
+            if deleted_images_count > 0:
+                msg += f" និងរូបភាពចំនួន {deleted_images_count} រូបចេញពី Storage ដោយជោគជ័យ!"
+            flash(msg, "success")
+        else:
+            # បើគ្មានទិន្នន័យត្រូវលុប
+            flash(
+                f"ℹ️ មិនមាន Chat Logs ណាដែលចាស់ជាង {days_threshold} ថ្ងៃ ត្រូវលុបឡើយ។",
+                "info",
+            )
+
+        return redirect(url_for("view_logs", group=target_group))
+    except Exception as e:
+        print(f"❌ Error during delete: {e}")
+        flash(f"❌ មានបញ្ហាក្នុងការលុបទិន្នន័យ៖ {e}", "danger")
+        return redirect(url_for("view_logs", group=target_group))
 
         # ----------------------------------------------------
         # ជំហានទី ២៖ ស្រង់យកឈ្មោះ File រូបភាព (Filenames) ចេញពី Storage URL
