@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import threading
 from flask import Flask, redirect, render_template_string, request, url_for
@@ -21,7 +22,6 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
 
-# អនុសាសន៍៖ ប្រើ Service Role Key ដើម្បី Bypass RLS
 SUPABASE_KEY = os.environ.get(
     "SUPABASE_SERVICE_ROLE_KEY",
     os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY"),
@@ -35,7 +35,9 @@ STORAGE_BUCKET = "chat_images"
 # ----------------------------------------------------
 app = Flask(__name__)
 
-# HTML Template (Dropdown List + Sequential Numbering #)
+PER_PAGE = 100  # កំណត់បង្ហាញ ១០០ ជួរក្នុង ១ ទំព័រ
+
+# HTML Template (Dropdown Filter + Pagination + Sequential Numbering #)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -92,8 +94,8 @@ HTML_TEMPLATE = """
                     <tbody>
                         {% for log in logs %}
                         <tr>
-                            <!-- លេខរៀងរាប់ចាប់ពី ១ ឡើងទៅ -->
-                            <td><strong>{{ loop.index }}</strong></td>
+                            <!-- លេខរៀងរាប់បន្តតាម Page (ឧទាហរណ៍៖ ទំព័រ ២ ចាប់ពី ១០១) -->
+                            <td><strong>{{ (current_page - 1) * per_page + loop.index }}</strong></td>
                             <td><small class="text-muted">{{ log.created_at }}</small></td>
                             <td><span class="badge badge-group">{{ log.group_title }}</span></td>
                             <td><strong>{{ log.full_name }}</strong></td>
@@ -122,6 +124,40 @@ HTML_TEMPLATE = """
                     </tbody>
                 </table>
             </div>
+
+            <!-- Pagination Control Bar -->
+            {% if total_pages > 1 %}
+            <div class="d-flex justify-content-between align-items-center mt-3">
+                <div class="text-muted">
+                    Showing Page <strong>{{ current_page }}</strong> of <strong>{{ total_pages }}</strong> (Total: {{ total_count }} logs)
+                </div>
+                <nav>
+                    <ul class="pagination mb-0">
+                        <!-- Previous Button -->
+                        <li class="page-item {% if current_page <= 1 %}disabled{% endif %}">
+                            <a class="page-link" href="/logs?group={{ group_filter }}&page={{ current_page - 1 }}">Previous</a>
+                        </li>
+
+                        <!-- Page Numbers -->
+                        {% for p in range(1, total_pages + 1) %}
+                            {% if p == 1 or p == total_pages or (p >= current_page - 2 and p <= current_page + 2) %}
+                                <li class="page-item {% if p == current_page %}active{% endif %}">
+                                    <a class="page-link" href="/logs?group={{ group_filter }}&page={{ p }}">{{ p }}</a>
+                                </li>
+                            {% elif p == current_page - 3 or p == current_page + 3 %}
+                                <li class="page-item disabled"><span class="page-link">...</span></li>
+                            {% endif %}
+                        {% endfor %}
+
+                        <!-- Next Button -->
+                        <li class="page-item {% if current_page >= total_pages %}disabled{% endif %}">
+                            <a class="page-link" href="/logs?group={{ group_filter }}&page={{ current_page + 1 }}">Next</a>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+            {% endif %}
+
         </div>
     </div>
 </body>
@@ -135,13 +171,21 @@ def home():
     return redirect(url_for("view_logs"))
 
 
-# Dashboard Logs Route
+# Dashboard Logs Route (ជាមួយ Pagination & Dropdown Filter)
 @app.route("/logs")
 def view_logs():
     try:
         group_filter = request.args.get("group", "").strip()
 
-        # ១. ទាញយកបញ្ជីឈ្មោះ Group ទាំងអស់មកធ្វើជា Option ក្នុង Dropdown List
+        # ទទួលយកលេខ Page ពី URL (Default គឺ Page 1)
+        try:
+            page = int(request.args.get("page", 1))
+            if page < 1:
+                page = 1
+        except ValueError:
+            page = 1
+
+        # ១. ទាញយកបញ្ជីឈ្មោះ Group ទាំងអស់សម្រាប់ដាក់ក្នុង Dropdown
         groups_res = supabase.table("chat_logs").select("group_title").execute()
         all_groups = set()
         if groups_res.data:
@@ -150,25 +194,44 @@ def view_logs():
                     all_groups.add(item["group_title"])
         sorted_groups = sorted(list(all_groups))
 
-        # ២. Query ទិន្នន័យ logs តាម Group ដែលបានជ្រើសរើស
-        query = (
+        # ២. រាប់ចំនួនទិន្នន័យសរុប (Total Count) ទៅតាម Filter
+        count_query = supabase.table("chat_logs").select("id", count="exact")
+        if group_filter:
+            count_query = count_query.eq("group_title", group_filter)
+        count_res = count_query.execute()
+        total_count = count_res.count if count_res.count is not None else 0
+
+        # គណនាចំនួនទំព័រសរុប (Total Pages)
+        total_pages = math.ceil(total_count / PER_PAGE) if total_count > 0 else 1
+        if page > total_pages:
+            page = total_pages
+
+        # គណនា Range [start, end] សម្រាប់ Supabase Pagination
+        start = (page - 1) * PER_PAGE
+        end = start + PER_PAGE - 1
+
+        # ៣. Fetch logs តាម Range ១០០ ជួរ
+        data_query = (
             supabase.table("chat_logs")
             .select("*")
             .order("id", desc=True)
-            .limit(100)
+            .range(start, end)
         )
-
         if group_filter:
-            query = query.eq("group_title", group_filter)
+            data_query = data_query.eq("group_title", group_filter)
 
-        response = query.execute()
-        logs_data = response.data or []
+        logs_res = data_query.execute()
+        logs_data = logs_res.data or []
 
         return render_template_string(
             HTML_TEMPLATE,
             logs=logs_data,
             groups=sorted_groups,
             group_filter=group_filter,
+            current_page=page,
+            total_pages=total_pages,
+            total_count=total_count,
+            per_page=PER_PAGE,
         )
     except Exception as e:
         logger.error(f"Error fetching logs from Supabase: {e}")
@@ -181,7 +244,7 @@ def run_flask():
 
 
 # ----------------------------------------------------
-# ៤. Telegram Message Handler (គាំទ្រ Text & Photo Upload)
+# ៤. Telegram Message Handler
 # ----------------------------------------------------
 async def handle_telegram_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -255,7 +318,7 @@ async def handle_telegram_message(
             "message_text": message_text,
         }
 
-        res = supabase.table("chat_logs").insert(payload).execute()
+        supabase.table("chat_logs").insert(payload).execute()
         logger.info(
             f"✅ Saved to Supabase: [{group_title}] {full_name}: {message_text}"
         )
