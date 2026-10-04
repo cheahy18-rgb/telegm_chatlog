@@ -20,20 +20,22 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
-# អនុសាសន៍៖ ប្រើ Service Role Key ដើម្បី Bypass RLS
+
+# អនុសាសន៍៖ ប្រើ Service Role Key ដើម្បី Bypass RLS ពេល Upload Storage
 SUPABASE_KEY = os.environ.get(
     "SUPABASE_SERVICE_ROLE_KEY",
     os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY"),
 )
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+STORAGE_BUCKET = "chat_images"
 
 # ----------------------------------------------------
 # ៣. Create Flask App (Web Dashboard)
 # ----------------------------------------------------
 app = Flask(__name__)
 
-# HTML Template សម្រាប់បង្ហាញ Log Dashboard
+# HTML Template (គាំទ្រការបង្ហាញរូបភាពក្នុង Table)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -47,6 +49,8 @@ HTML_TEMPLATE = """
         .card { border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         .table { vertical-align: middle; }
         .badge-group { background-color: #0d6efd; }
+        .chat-img { max-width: 180px; max-height: 180px; border-radius: 8px; border: 1px solid #ddd; transition: transform 0.2s; }
+        .chat-img:hover { transform: scale(1.05); }
     </style>
 </head>
 <body>
@@ -72,7 +76,7 @@ HTML_TEMPLATE = """
                             <th>Group Title</th>
                             <th>Full Name</th>
                             <th>Username</th>
-                            <th>Message Text</th>
+                            <th>Message / Image</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -83,7 +87,21 @@ HTML_TEMPLATE = """
                             <td><span class="badge badge-group">{{ log.group_title }}</span></td>
                             <td><strong>{{ log.full_name }}</strong></td>
                             <td>@{{ log.username }}</td>
-                            <td>{{ log.message_text }}</td>
+                            <td>
+                                {% if log.message_text and log.message_text.startswith('http') and ('.jpg' in log.message_text or '.png' in log.message_text or '.jpeg' in log.message_text) %}
+                                    {% set parts = log.message_text.split(' ', 1) %}
+                                    <div class="mb-1">
+                                        <a href="{{ parts[0] }}" target="_blank">
+                                            <img src="{{ parts[0] }}" class="chat-img" alt="Uploaded Image">
+                                        </a>
+                                    </div>
+                                    {% if parts|length > 1 %}
+                                        <small class="text-dark d-block">📝 {{ parts[1] }}</small>
+                                    {% endif %}
+                                {% else %}
+                                    {{ log.message_text }}
+                                {% endif %}
+                            </td>
                         </tr>
                         {% else %}
                         <tr>
@@ -100,7 +118,7 @@ HTML_TEMPLATE = """
 """
 
 
-# Root Route (កែប្រែបញ្ហា 404 Not Found លើ Render)
+# Root Route
 @app.route("/")
 def home():
     return redirect(url_for("view_logs"))
@@ -137,7 +155,7 @@ def run_flask():
 
 
 # ----------------------------------------------------
-# ៤. Telegram Message Handler (ការពារ Null Payload)
+# ៤. Telegram Message Handler (គាំទ្រ Text & Photo Upload)
 # ----------------------------------------------------
 async def handle_telegram_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -167,8 +185,52 @@ async def handle_telegram_message(
             full_name = f"{first_name} {last_name}".strip() or "Unknown"
             username = msg.from_user.username or "No Username"
 
-        # 3. យកអត្ថបទសារ
-        message_text = msg.text or msg.caption or "[Media/Attachment]"
+        # 3. ទាញយកសារ (Text ឬ Photo Upload ទៅ Supabase Storage)
+        message_text = ""
+
+        if msg.text:
+            message_text = msg.text
+
+        elif msg.photo:
+            caption = msg.caption or ""
+            try:
+                # ទាញយករូបភាព Resolution ធំបំផុត
+                photo_file = await msg.photo[-1].get_file()
+                file_bytes = await photo_file.download_as_bytearray()
+
+                # បង្កើតឈ្មោះ File
+                filename = f"img_{msg.message_id}_{photo_file.file_unique_id}.jpg"
+
+                # Upload ទៅកាន់ Supabase Storage
+                supabase.storage.from_(STORAGE_BUCKET).upload(
+                    path=filename,
+                    file=bytes(file_bytes),
+                    file_options={"content-type": "image/jpeg"},
+                )
+
+                # ទាញយក Public URL
+                image_url = supabase.storage.from_(
+                    STORAGE_BUCKET
+                ).get_public_url(filename)
+
+                # បញ្ចូល Link រូបភាព និង Caption ចូលគ្នា
+                message_text = (
+                    f"{image_url} {caption}".strip()
+                    if caption
+                    else image_url
+                )
+                logger.info(
+                    f"📷 Photo uploaded successfully to Supabase Storage: {filename}"
+                )
+
+            except Exception as img_err:
+                logger.error(f"❌ Upload Image Error: {img_err}")
+                message_text = (
+                    f"[រូបភាពមិនអាចទាញយកបាន] {caption}".strip()
+                )
+
+        else:
+            message_text = msg.caption or "[Media/Attachment]"
 
         # 4. រៀបចំ Payload
         payload = {
@@ -180,7 +242,7 @@ async def handle_telegram_message(
             "message_text": message_text,
         }
 
-        # 5. Insert ទៅ Supabase
+        # 5. Insert ទៅ Supabase Table
         res = supabase.table("chat_logs").insert(payload).execute()
         logger.info(
             f"✅ Message Saved to Supabase: [{group_title}] {full_name}: {message_text}"
