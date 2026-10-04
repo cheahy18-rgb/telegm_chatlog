@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL")
 
-# អនុសាសន៍៖ ប្រើ Service Role Key ដើម្បី Bypass RLS ពេល Upload Storage
+# អនុសាសន៍៖ ប្រើ Service Role Key ដើម្បី Bypass RLS
 SUPABASE_KEY = os.environ.get(
     "SUPABASE_SERVICE_ROLE_KEY",
     os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY"),
@@ -35,7 +35,7 @@ STORAGE_BUCKET = "chat_images"
 # ----------------------------------------------------
 app = Flask(__name__)
 
-# HTML Template (គាំទ្រការបង្ហាញរូបភាពក្នុង Table)
+# HTML Template (Dropdown List + Sequential Numbering #)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -57,9 +57,18 @@ HTML_TEMPLATE = """
     <div class="container-fluid">
         <div class="card p-4 mb-4">
             <h2 class="mb-3">💬 Telegram Chat Logs Dashboard</h2>
-            <form method="GET" action="/logs" class="row g-3 mb-3">
+            
+            <!-- Dropdown Filter Form -->
+            <form method="GET" action="/logs" class="row g-3 mb-3 align-items-center">
                 <div class="col-auto">
-                    <input type="text" name="group" class="form-control" placeholder="Filter by Group Name" value="{{ group_filter }}">
+                    <select name="group" class="form-select" onchange="this.form.submit()">
+                        <option value="">-- Select All Groups --</option>
+                        {% for g in groups %}
+                            <option value="{{ g }}" {% if g == group_filter %}selected{% endif %}>
+                                {{ g }}
+                            </option>
+                        {% endfor %}
+                    </select>
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">Filter</button>
@@ -67,11 +76,12 @@ HTML_TEMPLATE = """
                 </div>
             </form>
             
+            <!-- Logs Table -->
             <div class="table-responsive">
                 <table class="table table-hover table-striped border">
                     <thead class="table-dark">
                         <tr>
-                            <th>ID</th>
+                            <th style="width: 60px;">#</th>
                             <th>Date/Time (UTC)</th>
                             <th>Group Title</th>
                             <th>Full Name</th>
@@ -82,7 +92,8 @@ HTML_TEMPLATE = """
                     <tbody>
                         {% for log in logs %}
                         <tr>
-                            <td>{{ log.id }}</td>
+                            <!-- លេខរៀងរាប់ចាប់ពី ១ ឡើងទៅ -->
+                            <td><strong>{{ loop.index }}</strong></td>
                             <td><small class="text-muted">{{ log.created_at }}</small></td>
                             <td><span class="badge badge-group">{{ log.group_title }}</span></td>
                             <td><strong>{{ log.full_name }}</strong></td>
@@ -129,6 +140,17 @@ def home():
 def view_logs():
     try:
         group_filter = request.args.get("group", "").strip()
+
+        # ១. ទាញយកបញ្ជីឈ្មោះ Group ទាំងអស់មកធ្វើជា Option ក្នុង Dropdown List
+        groups_res = supabase.table("chat_logs").select("group_title").execute()
+        all_groups = set()
+        if groups_res.data:
+            for item in groups_res.data:
+                if item.get("group_title"):
+                    all_groups.add(item["group_title"])
+        sorted_groups = sorted(list(all_groups))
+
+        # ២. Query ទិន្នន័យ logs តាម Group ដែលបានជ្រើសរើស
         query = (
             supabase.table("chat_logs")
             .select("*")
@@ -137,12 +159,16 @@ def view_logs():
         )
 
         if group_filter:
-            query = query.ilike("group_title", f"%{group_filter}%")
+            query = query.eq("group_title", group_filter)
 
         response = query.execute()
         logs_data = response.data or []
+
         return render_template_string(
-            HTML_TEMPLATE, logs=logs_data, group_filter=group_filter
+            HTML_TEMPLATE,
+            logs=logs_data,
+            groups=sorted_groups,
+            group_filter=group_filter,
         )
     except Exception as e:
         logger.error(f"Error fetching logs from Supabase: {e}")
@@ -165,7 +191,6 @@ async def handle_telegram_message(
         if not msg:
             return
 
-        # 1. យកព័ត៌មាន Chat/Group
         chat_id = msg.chat.id if msg.chat else None
         group_title = (
             msg.chat.title
@@ -173,7 +198,6 @@ async def handle_telegram_message(
             else "Private Chat"
         )
 
-        # 2. យកព័ត៌មាន User
         user_id = None
         full_name = "Unknown"
         username = "No Username"
@@ -185,7 +209,6 @@ async def handle_telegram_message(
             full_name = f"{first_name} {last_name}".strip() or "Unknown"
             username = msg.from_user.username or "No Username"
 
-        # 3. ទាញយកសារ (Text ឬ Photo Upload ទៅ Supabase Storage)
         message_text = ""
 
         if msg.text:
@@ -194,35 +217,26 @@ async def handle_telegram_message(
         elif msg.photo:
             caption = msg.caption or ""
             try:
-                # ទាញយករូបភាព Resolution ធំបំផុត
                 photo_file = await msg.photo[-1].get_file()
                 file_bytes = await photo_file.download_as_bytearray()
 
-                # បង្កើតឈ្មោះ File
                 filename = f"img_{msg.message_id}_{photo_file.file_unique_id}.jpg"
 
-                # Upload ទៅកាន់ Supabase Storage
                 supabase.storage.from_(STORAGE_BUCKET).upload(
                     path=filename,
                     file=bytes(file_bytes),
                     file_options={"content-type": "image/jpeg"},
                 )
 
-                # ទាញយក Public URL
                 image_url = supabase.storage.from_(
                     STORAGE_BUCKET
                 ).get_public_url(filename)
 
-                # បញ្ចូល Link រូបភាព និង Caption ចូលគ្នា
                 message_text = (
                     f"{image_url} {caption}".strip()
                     if caption
                     else image_url
                 )
-                logger.info(
-                    f"📷 Photo uploaded successfully to Supabase Storage: {filename}"
-                )
-
             except Exception as img_err:
                 logger.error(f"❌ Upload Image Error: {img_err}")
                 message_text = (
@@ -232,7 +246,6 @@ async def handle_telegram_message(
         else:
             message_text = msg.caption or "[Media/Attachment]"
 
-        # 4. រៀបចំ Payload
         payload = {
             "chat_id": chat_id,
             "group_title": group_title,
@@ -242,10 +255,9 @@ async def handle_telegram_message(
             "message_text": message_text,
         }
 
-        # 5. Insert ទៅ Supabase Table
         res = supabase.table("chat_logs").insert(payload).execute()
         logger.info(
-            f"✅ Message Saved to Supabase: [{group_title}] {full_name}: {message_text}"
+            f"✅ Saved to Supabase: [{group_title}] {full_name}: {message_text}"
         )
 
     except Exception as e:
@@ -260,21 +272,16 @@ def main():
         logger.error("❌ TELEGRAM_BOT_TOKEN មិនទាន់បានកំណត់ឡើយ!")
         return
 
-    # ដំណើរការ Flask Web App ក្នុង Background Thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    logger.info("🌐 Flask Dashboard background thread started...")
 
-    # បង្កើត និងដំណើរការ Telegram Bot (Polling)
     telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # ចាប់យកសារ Text និង Photo ទាំងអស់ (មិនរាប់បញ្ចូល Commands)
     msg_filter = (filters.TEXT | filters.PHOTO) & (~filters.COMMAND)
     telegram_app.add_handler(
         MessageHandler(msg_filter, handle_telegram_message)
     )
 
-    logger.info("🚀 Telegram Bot is running polling...")
     telegram_app.run_polling(drop_pending_updates=True)
 
 
