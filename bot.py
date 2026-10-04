@@ -251,6 +251,10 @@ HTML_TEMPLATE = """
 # ----------------------------------------------------
 # ៣. Route បង្ហាញ Dashboard (/logs)
 # ----------------------------------------------------
+@app.route("/")
+def home():
+    return redirect(url_for("view_logs"))  # ឬ return "Bot is running OK!"
+    
 @app.route("/logs")
 def view_logs():
     try:
